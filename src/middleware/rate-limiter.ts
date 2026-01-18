@@ -259,6 +259,7 @@ export class RateLimiter {
   private tracker: RateLimitTracker;
   private adaptiveThrottling: AdaptiveThrottling;
   private endpointLimits: Map<string, RateLimitTracker>;
+  private endpointConcurrent: Map<string, number>;
   private burstLimit: number;
   private concurrentRequests: number;
   private maxConcurrent: number;
@@ -266,6 +267,9 @@ export class RateLimiter {
   private isProcessingQueue: boolean;
   private config: RateLimitConfig;
   private cache?: { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown, ttl?: number) => Promise<void> };
+  private rejectedRequests: number;
+  private totalRequests: number;
+  private delayFn?: (ms: number) => Promise<void>;
 
   constructor(config: RateLimitConfig) {
     this.config = config;
@@ -282,11 +286,14 @@ export class RateLimiter {
       config.maxRequests
     );
     this.endpointLimits = new Map();
+    this.endpointConcurrent = new Map();
     this.burstLimit = 5;
     this.concurrentRequests = 0;
     this.maxConcurrent = config.maxRequests || 10;
     this.queue = [];
     this.isProcessingQueue = false;
+    this.rejectedRequests = 0;
+    this.totalRequests = 0;
   }
 
   setCache(cache: { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown, ttl?: number) => Promise<void> }): void {
@@ -304,6 +311,7 @@ export class RateLimiter {
     }
 
     if (this.predictiveThrottle()) {
+      this.rejectedRequests++;
       throw new RateLimitError(
         'Predictive rate limit triggered to avoid hard limit',
         this.getBackoffDuration(),
@@ -314,8 +322,9 @@ export class RateLimiter {
 
     if (!this.tokenBucket.consume(1)) {
       const waitTime = this.tokenBucket.waitForTokens(1);
+      this.rejectedRequests++;
       throw new RateLimitError(
-        'Token bucket exhausted',
+        'Rate limit exceeded',
         Math.ceil(waitTime / 1000),
         this.adaptiveThrottling.getCurrentLimit(),
         this.adaptiveThrottling.getRemaining()
@@ -332,25 +341,40 @@ export class RateLimiter {
 
   async execute<T>(fn: () => Promise<T>, endpoint?: string): Promise<T> {
     const endpointKey = endpoint || 'default';
+    
+    // Initialize endpoint concurrent counter
+    if (!this.endpointConcurrent.has(endpointKey)) {
+      this.endpointConcurrent.set(endpointKey, 0);
+    }
+    
+    // Check per-endpoint concurrent limit
+    const currentEndpointConcurrent = this.endpointConcurrent.get(endpointKey) || 0;
+    if (currentEndpointConcurrent >= this.config.maxRequests) {
+      this.rejectedRequests++;
+      throw new RateLimitError(
+        'Rate limit exceeded',
+        1,
+        this.config.maxRequests,
+        this.config.maxRequests - currentEndpointConcurrent
+      );
+    }
+    
+    // Initialize endpoint tracker
     let endpointTracker = this.endpointLimits.get(endpointKey);
     if (!endpointTracker) {
       endpointTracker = new RateLimitTracker(
-        this.config.maxRequests,
-        this.config.maxRequests * 60
+        this.config.requestsPerMinute || this.config.maxRequests,
+        this.config.requestsPerHour || this.config.maxRequests * 60
       );
       this.endpointLimits.set(endpointKey, endpointTracker);
     }
 
+    // Check time window limits before executing
     endpointTracker.trackRequest(endpointKey);
-    this.tracker.trackRequest(endpointKey);
-
     if (endpointTracker.isExceeded()) {
-      const cachedData = await this.tryGetFromCache(endpointKey);
-      if (cachedData !== null) {
-        return cachedData as T;
-      }
+      this.rejectedRequests++;
       throw new RateLimitError(
-        `Endpoint rate limit exceeded for ${endpointKey}`,
+        'Rate limit exceeded',
         60,
         this.config.maxRequests,
         endpointTracker.getRemaining().minute
@@ -358,6 +382,9 @@ export class RateLimiter {
     }
 
     await this.acquire();
+    this.totalRequests++;
+    this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) || 0) + 1);
+    this.tracker.trackRequest(endpointKey);
 
     try {
       const result = await fn();
@@ -382,6 +409,7 @@ export class RateLimiter {
       throw error;
     } finally {
       this.release();
+      this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) || 0) - 1);
     }
   }
 
@@ -461,6 +489,9 @@ export class RateLimiter {
     currentLimit: number;
     queueLength: number;
     isRateLimited: boolean;
+    totalRequests: number;
+    rejectedRequests: number;
+    availableTokens: number;
   } {
     return {
       tokens: this.tokenBucket.getTokens(),
@@ -469,7 +500,10 @@ export class RateLimiter {
       hourCount: this.tracker.getHourCount(),
       currentLimit: this.adaptiveThrottling.getCurrentLimit(),
       queueLength: this.queue.length,
-      isRateLimited: this.isRateLimited()
+      isRateLimited: this.isRateLimited(),
+      totalRequests: this.totalRequests,
+      rejectedRequests: this.rejectedRequests,
+      availableTokens: this.tokenBucket.getTokens()
     };
   }
 
@@ -481,9 +515,12 @@ export class RateLimiter {
     this.tracker.reset();
     this.adaptiveThrottling.reset();
     this.endpointLimits.clear();
+    this.endpointConcurrent.clear();
     this.concurrentRequests = 0;
     this.queue = [];
     this.isProcessingQueue = false;
+    this.rejectedRequests = 0;
+    this.totalRequests = 0;
   }
 
   getConfig(): RateLimitConfig {

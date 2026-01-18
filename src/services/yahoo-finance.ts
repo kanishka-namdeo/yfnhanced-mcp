@@ -15,7 +15,15 @@ import type {
   ScreenerResult,
   PriceData
 } from '../types/yahoo-finance.js';
-import { YahooFinanceError, YF_ERR_API_CHANGED, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
+import {
+  YahooFinanceError,
+  YF_ERR_API_CHANGED,
+  YF_ERR_DATA_INCOMPLETE,
+  YF_ERR_DATA_UNAVAILABLE,
+  YF_ERR_PARTIAL_DATA,
+  type DataWarning,
+  type PartialDataResult
+} from '../types/errors.js';
 import { RateLimiter } from '../middleware/rate-limiter.js';
 import { CircuitBreaker } from '../middleware/circuit-breaker.js';
 import { Cache } from '../middleware/cache.js';
@@ -92,6 +100,7 @@ export class YahooFinanceClient {
   private fallbackCache: Map<string, unknown>;
   private initialized: boolean;
   private yahooFinanceInstance: InstanceType<typeof YahooFinance>;
+  private warnings: DataWarning[];
 
   constructor(config: MCPServerConfig) {
     this.config = config;
@@ -104,6 +113,7 @@ export class YahooFinanceClient {
     this.fallbackCache = new Map();
     this.initialized = false;
     this.yahooFinanceInstance = new YahooFinance();
+    this.warnings = [];
 
     this.rateLimiter.setCache({
       get: (key) => this.cache.get(key),
@@ -135,7 +145,171 @@ export class YahooFinanceClient {
     this.circuitBreaker.reset();
     this.retryPolicy.reset();
     this.fallbackCache.clear();
+    this.warnings = [];
     this.initialized = false;
+  }
+
+  /**
+   * Gets accumulated warnings and clears the warning buffer
+   */
+  getWarnings(): DataWarning[] {
+    const currentWarnings = [...this.warnings];
+    this.warnings = [];
+    return currentWarnings;
+  }
+
+  /**
+   * Adds a warning to the warning buffer
+   */
+  private addWarning(field: string, severity: 'warning' | 'info', message: string): void {
+    this.warnings.push({
+      field,
+      severity,
+      message,
+      timestamp: new Date()
+    });
+  }
+
+  /**
+   * Implements graceful degradation by combining live data with cached data
+   * and adding warnings for missing fields
+   */
+  private async executeWithGracefulDegradation<T>(
+    cacheKey: string,
+    fn: () => Promise<T>,
+    options?: YahooFinanceOptions
+  ): Promise<PartialDataResult<T>> {
+    const useCache = options?.useCache !== false && this.config.cache.enabled;
+    let liveData: T | null = null;
+    let cachedData: T | null = null;
+    const warnings: DataWarning[] = [];
+
+    // Try to get cached data first (for fallback)
+    if (useCache && options?.forceRefresh !== true) {
+      try {
+        cachedData = await this.cache.get<T>(cacheKey);
+      } catch (_err) {
+        // Ignore cache errors during graceful degradation
+      }
+    }
+
+    // Try to fetch live data
+    try {
+      liveData = await this.circuitBreaker.execute(async () => {
+        return this.rateLimiter.execute(async () => {
+          return this.retryPolicy.execute(async () => {
+            return fn();
+          }, { cacheKey });
+        }, cacheKey);
+      });
+
+      // Store successful result in cache
+      if (useCache && liveData !== null) {
+        await this.cache.set(cacheKey, liveData);
+      }
+    } catch (error) {
+      const classifiedError = this.errorClassifier(error);
+
+      // If we have cached data, return it with a warning
+      if (cachedData !== null) {
+        warnings.push({
+          field: 'data',
+          severity: 'warning',
+          message: `Failed to fetch fresh data: ${classifiedError.message}. Returning cached data.`,
+          timestamp: new Date()
+        });
+
+        // Store in fallback cache for later use
+        this.fallbackCache.set(`fallback:${cacheKey}`, cachedData);
+
+        return {
+          data: cachedData,
+          warnings,
+          isPartial: true,
+          hasData: true
+        };
+      }
+
+      // Try fallback cache
+      const fallbackData = this.getFallbackData(cacheKey);
+      if (fallbackData !== null) {
+        warnings.push({
+          field: 'data',
+          severity: 'warning',
+          message: `Failed to fetch data: ${classifiedError.message}. Returning fallback data.`,
+          timestamp: new Date()
+        });
+
+        return {
+          data: fallbackData as T,
+          warnings,
+          isPartial: true,
+          hasData: true
+        };
+      }
+
+      // No data available - throw the error
+      throw classifiedError;
+    }
+
+    // Check for partial data and add warnings
+    if (liveData !== null) {
+      const dataIssues = this.validateDataQuality(liveData);
+      if (dataIssues.length > 0) {
+        warnings.push(...dataIssues);
+      }
+    }
+
+    return {
+      data: liveData,
+      warnings,
+      isPartial: warnings.length > 0,
+      hasData: liveData !== null
+    };
+  }
+
+  /**
+   * Validates data quality and returns warnings for missing/incomplete fields
+   */
+  private validateDataQuality(data: unknown): DataWarning[] {
+    const warnings: DataWarning[] = [];
+
+    if (data === null || typeof data !== 'object') {
+      return warnings;
+    }
+
+    const obj = data as Record<string, unknown>;
+
+    // Check for null/undefined critical fields
+    const criticalFields = ['symbol', 'price', 'meta'];
+    for (const field of criticalFields) {
+      if (obj[field] === null || obj[field] === undefined) {
+        warnings.push({
+          field,
+          severity: 'warning',
+          message: `Critical field '${field}' is missing or null`,
+          timestamp: new Date()
+        });
+      }
+    }
+
+    // Check for nested price data issues
+    if (obj.price !== null && typeof obj.price === 'object') {
+      const price = obj.price as Record<string, unknown>;
+      const priceFields = ['regularMarketPrice', 'regularMarketChange', 'regularMarketVolume'];
+      for (const field of priceFields) {
+        if (price[field] === null || price[field] === undefined) {
+          warnings.push({
+            field: `price.${field}`,
+            severity: 'warning',
+            message: `Price field '${field}' is missing - data may be incomplete`,
+            timestamp: new Date()
+          });
+        }
+      }
+    }
+
+    return warnings;
   }
 
   getQuote(symbol: string, options?: GetQuoteOptions): Promise<QuoteResult> {
@@ -415,10 +589,41 @@ export class YahooFinanceClient {
           } catch (error) {
             const classifiedError = this.errorClassifier(error);
 
+            // Graceful degradation: try fallback data before throwing
             if (useCache && classifiedError.isRetryable === true) {
               const fallbackData = this.getFallbackData(cacheKey);
               if (fallbackData !== null) {
+                // Add warning about using fallback data
+                this.addWarning(
+                  cacheKey,
+                  'warning',
+                  `Using fallback data due to: ${classifiedError.message}`
+                );
                 return fallbackData as T;
+              }
+
+              // Try cache as fallback
+              const cachedData = await this.cache.get<T>(cacheKey);
+              if (cachedData !== null) {
+                this.addWarning(
+                  cacheKey,
+                  'warning',
+                  `Using cached data due to: ${classifiedError.message}`
+                );
+                return cachedData;
+              }
+            }
+
+            // If no fallback available, try to provide partial data
+            if (classifiedError.code === YF_ERR_PARTIAL_DATA || classifiedError.code === YF_ERR_DATA_INCOMPLETE) {
+              const partialResult = classifiedError.getPartialData<T>();
+              if (partialResult.hasData) {
+                partialResult.warnings.forEach(warning => {
+                  this.addWarning(warning.field, warning.severity, warning.message);
+                });
+                if (partialResult.data !== null) {
+                  return partialResult.data;
+                }
               }
             }
 
@@ -438,12 +643,28 @@ export class YahooFinanceClient {
         false,
         false,
         { result },
-        'Check API response structure'
+        'Check API response structure',
+        undefined,
+        undefined
       );
     }
 
     const quote = result as Partial<QuoteResult>;
-    const required: Array<keyof PriceData> = [
+    const warnings: DataWarning[] = [];
+
+    // Graceful degradation: initialize price object if missing
+    if (quote.price === undefined) {
+      quote.price = {} as PriceData;
+      warnings.push({
+        field: 'price',
+        severity: 'warning',
+        message: 'Price object missing - initialized with empty structure',
+        timestamp: new Date()
+      });
+    }
+
+    // Fill in missing critical fields with null instead of throwing errors
+    const critical: Array<keyof PriceData> = [
       'regularMarketPrice',
       'regularMarketChange',
       'regularMarketChangePercent',
@@ -451,18 +672,65 @@ export class YahooFinanceClient {
       'regularMarketVolume'
     ];
 
-    if (quote.price === undefined) {
-      quote.price = {} as PriceData;
-    }
+    const preferred: Array<keyof PriceData> = [
+      'regularMarketOpen',
+      'regularMarketDayHigh',
+      'regularMarketDayLow',
+      'marketCap',
+      'fiftyTwoWeekHigh',
+      'fiftyTwoWeekLow',
+      'currency',
+      'marketState',
+      'quoteType'
+    ];
 
-    for (const field of required) {
+    const allFields = [...critical, ...preferred];
+
+    for (const field of allFields) {
       if ((quote.price as Record<string, unknown>)[field] === undefined) {
         (quote.price as Record<string, unknown>)[field] = null;
+        if (critical.includes(field)) {
+          warnings.push({
+            field: `price.${field}`,
+            severity: 'warning',
+            message: `Critical price field '${field}' is null or missing - data may be incomplete`,
+            timestamp: new Date()
+          });
+        } else {
+          warnings.push({
+            field: `price.${field}`,
+            severity: 'info',
+            message: `Preferred price field '${field}' is null or missing`,
+            timestamp: new Date()
+          });
+        }
       }
     }
 
+    // Check for symbol (required for data to be useful)
+    if (!quote.price?.symbol) {
+      warnings.push({
+        field: 'symbol',
+        severity: 'warning',
+        message: 'Symbol is missing - data may be invalid',
+        timestamp: new Date()
+      });
+    }
+
+    // API change detection - non-fatal
     if (this.detectAPIChanges(quote)) {
-      this.handleAPIChange('quote', quote);
+      warnings.push({
+        field: 'api-structure',
+        severity: 'warning',
+        message: 'API structure may have changed - some fields may be missing',
+        timestamp: new Date()
+      });
+      // Don't throw error, just warn and continue
+    }
+
+    // Store warnings in the quote result if possible
+    if (warnings.length > 0) {
+      (quote as any).warnings = warnings;
     }
 
     return quote as QuoteResult;
@@ -717,21 +985,97 @@ export class YahooFinanceClient {
 
     for (const alt of alternatives) {
       try {
-        const response = await fetch(alt.url, {
+        const response = await fetch(`${alt.url}${symbol}`, {
           method: alt.method,
-          headers: alt.headers ?? {}
+          headers: {
+            ...alt.headers,
+            // Ensure proper cookie handling
+            'Cookie': '', // Clear cookies to avoid stale crumb issues
+            'Cache-Control': 'no-cache'
+          }
         });
 
         if (response.ok === true) {
           const data = await response.json();
+
+          // Check for cookie-related issues in response
+          const setCookieHeader = response.headers.get('set-cookie');
+          if (setCookieHeader && setCookieHeader.includes('crumb')) {
+            this.addWarning(
+              'cookie',
+              'info',
+              'Cookie crumb updated - session refreshed'
+            );
+          }
+
           return data;
+        } else if (response.status === 401 || response.status === 403) {
+          // Cookie/session authentication failed
+          this.addWarning(
+            'cookie',
+            'warning',
+            `Authentication failed (${response.status}) - cookie or crumb may be expired. Retrying with fresh session.`
+          );
+          continue;
         }
-      } catch {
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.toLowerCase().includes('cookie') || errorMessage.toLowerCase().includes('crumb')) {
+          this.addWarning(
+            'cookie',
+            'warning',
+            `Cookie error during alternative endpoint fetch: ${errorMessage}. Attempting recovery...`
+          );
+        }
         continue;
       }
     }
 
     return null;
+  }
+
+  /**
+   * Handles cookie/session errors with specific recovery strategies
+   */
+  private handleCookieError(error: YahooFinanceError, cacheKey: string): void {
+    const hints = error.context?.hints as string[] || [];
+
+    // Add specific warnings for cookie issues
+    if (hints.some(h => h.includes('crumb'))) {
+      this.addWarning(
+        'cookie.crumb',
+        'warning',
+        'Cookie crumb token expired or invalid. Session may need refresh.'
+      );
+    }
+    if (hints.some(h => h.includes('csrf'))) {
+      this.addWarning(
+        'cookie.csrf',
+        'warning',
+        'CSRF token validation failed. Request may need to be retried with new session.'
+      );
+    }
+    if (hints.some(h => h.includes('session'))) {
+      this.addWarning(
+        'cookie.session',
+        'warning',
+        'Session expired. Attempting to use cached data or retry with fresh session.'
+      );
+    }
+
+    // Try to use cached data as fallback for cookie errors
+    this.cache.get(cacheKey).then(cached => {
+      if (cached !== null) {
+        this.addWarning(
+          'cookie',
+          'info',
+          'Using cached data while cookie session is being refreshed'
+        );
+        this.fallbackCache.set(`fallback:${cacheKey}`, cached);
+      }
+    }).catch(() => {
+      // Ignore cache errors
+    });
   }
 
   getFallbackData(symbol: string): unknown | null {
@@ -796,6 +1140,7 @@ export class YahooFinanceClient {
     rateLimiter: ReturnType<RateLimiter['getStats']>;
     circuitBreaker: { state: string; failureCount: number; successCount: number };
     cache: ReturnType<Cache['getStats']>;
+    warnings: DataWarning[];
   } {
     const circuitBreakerState = this.circuitBreaker.getState();
 
@@ -806,7 +1151,8 @@ export class YahooFinanceClient {
         failureCount: this.circuitBreaker.getMetrics().failureCount,
         successCount: this.circuitBreaker.getMetrics().successCount
       },
-      cache: this.cache.getStats()
+      cache: this.cache.getStats(),
+      warnings: this.warnings
     };
   }
 

@@ -3,7 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
-import { rateLimitConfigs, concurrentRequestCounts, backoffStrategies } from '../fixtures/test-data.js';
+import { rateLimitConfigs, concurrentRequestCounts, backoffStrategies } from '../fixtures/test-data.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -175,7 +175,7 @@ describe('Rate Limit Chaos Tests', () => {
             get: (name: string) => {
               if (name === 'retry-after') return '60';
               if (name === 'x-ratelimit-limit') return String(sustainedLimit);
-              if (name === 'x-ratelimit-remaining') => '0';
+              if (name === 'x-ratelimit-remaining') return '0';
               return null;
             }
           },

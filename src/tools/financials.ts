@@ -279,11 +279,14 @@ async function fetchBalanceSheet(
 ): Promise<BalanceSheet> {
   try {
     const yf = new YahooFinance();
-    const result = await yf.quoteSummary(symbol, {
-      modules: frequency === 'annual' ? ['balanceSheetHistory'] : ['balanceSheetHistoryQuarterly']
+    // Use a date far in the past to get all available historical data
+    const result = await yf.fundamentalsTimeSeries(symbol, {
+      module: 'balance-sheet',
+      type: frequency,
+      period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result?.balanceSheetHistory) {
+    if (!result || result.length === 0) {
       throw new YahooFinanceError(
         `Balance sheet data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -295,7 +298,43 @@ async function fetchBalanceSheet(
       );
     }
 
-    const bsData = result.balanceSheetHistory as unknown as BalanceSheet;
+    // Convert fundamentalsTimeSeries format to legacy BalanceSheet format
+    const bsData: BalanceSheet = {
+      maxAge: 0,
+      annual: [],
+      quarterly: []
+    };
+
+    const dataArray = frequency === 'annual' ? bsData.annual : bsData.quarterly;
+
+    // Cast result to BalanceSheet type
+    for (const item of result as any) {
+      const periodData: Record<string, unknown> = {
+        endDate: {
+          fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
+          raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
+        },
+        totalAssets: item.totalAssets ? { fmt: item.totalAssets.toString(), raw: item.totalAssets } : undefined,
+        totalLiab: item.totalLiabilities ? { fmt: item.totalLiabilities.toString(), raw: item.totalLiabilities } : undefined,
+        totalStockholderEquity: item.stockholdersEquity ? { fmt: item.stockholdersEquity.toString(), raw: item.stockholdersEquity } : undefined,
+        cash: item.cashAndCashEquivalents ? { fmt: item.cashAndCashEquivalents.toString(), raw: item.cashAndCashEquivalents } : undefined,
+        shortTermInvestments: item.cashCashEquivalentsAndShortTermInvestments ? { fmt: item.cashCashEquivalentsAndShortTermInvestments.toString(), raw: item.cashCashEquivalentsAndShortTermInvestments } : undefined,
+        netReceivables: item.receivables ? { fmt: item.receivables.toString(), raw: item.receivables } : undefined,
+        inventory: item.inventory ? { fmt: item.inventory.toString(), raw: item.inventory } : undefined,
+        totalCurrentAssets: item.currentAssets ? { fmt: item.currentAssets.toString(), raw: item.currentAssets } : undefined,
+        totalCurrentLiabilities: item.currentLiabilities ? { fmt: item.currentLiabilities.toString(), raw: item.currentLiabilities } : undefined,
+        longTermDebt: item.longTermDebt ? { fmt: item.longTermDebt.toString(), raw: item.longTermDebt } : undefined,
+        propertyPlantEquipment: item.netPPE ? { fmt: item.netPPE.toString(), raw: item.netPPE } : undefined,
+        goodWill: item.goodwill ? { fmt: item.goodwill.toString(), raw: item.goodwill } : undefined,
+        intangibleAssets: item.otherIntangibleAssets ? { fmt: item.otherIntangibleAssets.toString(), raw: item.otherIntangibleAssets } : undefined,
+        retainedEarnings: item.retainedEarnings ? { fmt: item.retainedEarnings.toString(), raw: item.retainedEarnings } : undefined,
+        otherAssets: item.otherAssets ? { fmt: item.otherAssets.toString(), raw: item.otherAssets } : undefined,
+        otherLiab: item.otherLiabilities ? { fmt: item.otherLiabilities.toString(), raw: item.otherLiabilities } : undefined
+      };
+
+      dataArray.push(periodData as any);
+    }
+
     return bsData;
   } catch (error) {
     if (error instanceof YahooFinanceError) {
@@ -319,11 +358,14 @@ async function fetchIncomeStatement(
 ): Promise<IncomeStatement> {
   try {
     const yf = new YahooFinance();
-    const result = await yf.quoteSummary(symbol, {
-      modules: frequency === 'annual' ? ['incomeStatementHistory'] : ['incomeStatementHistoryQuarterly']
+    // Use a date far in past to get all available historical data
+    const result = await yf.fundamentalsTimeSeries(symbol, {
+      module: 'financials',
+      type: frequency,
+      period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result?.incomeStatementHistory) {
+    if (!result || result.length === 0) {
       throw new YahooFinanceError(
         `Income statement data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -335,7 +377,44 @@ async function fetchIncomeStatement(
       );
     }
 
-    const isData = result.incomeStatementHistory as unknown as IncomeStatement;
+    // Convert fundamentalsTimeSeries format to legacy IncomeStatement format
+    const isData: IncomeStatement = {
+      maxAge: 0,
+      annual: [],
+      quarterly: []
+    };
+
+    const dataArray = frequency === 'annual' ? isData.annual : isData.quarterly;
+
+    // Cast result to Financials type
+    for (const item of result as any) {
+      const periodData: Record<string, unknown> = {
+        endDate: {
+          fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
+          raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
+        },
+        totalRevenue: item.totalRevenue ? { fmt: item.totalRevenue.toString(), raw: item.totalRevenue } : undefined,
+        costOfRevenue: item.costOfRevenue ? { fmt: item.costOfRevenue.toString(), raw: item.costOfRevenue } : undefined,
+        grossProfit: item.grossProfit ? { fmt: item.grossProfit.toString(), raw: item.grossProfit } : undefined,
+        operatingIncome: item.operatingIncome ? { fmt: item.operatingIncome.toString(), raw: item.operatingIncome } : undefined,
+        ebitda: item.EBITDA ? { fmt: item.EBITDA.toString(), raw: item.EBITDA } : undefined,
+        netIncome: item.netIncome ? { fmt: item.netIncome.toString(), raw: item.netIncome } : undefined,
+        epsBasic: item.basicEPS ? { fmt: item.basicEPS.toString(), raw: item.basicEPS } : undefined,
+        epsDiluted: item.dilutedEPS ? { fmt: item.dilutedEPS.toString(), raw: item.dilutedEPS } : undefined,
+        interestExpense: item.interestExpenseNonOperating ? { fmt: item.interestExpenseNonOperating.toString(), raw: item.interestExpenseNonOperating } : undefined,
+        taxProvision: item.taxProvision ? { fmt: item.taxProvision.toString(), raw: item.taxProvision } : undefined,
+        researchAndDevelopment: item.researchAndDevelopment ? { fmt: item.researchAndDevelopment.toString(), raw: item.researchAndDevelopment } : undefined,
+        sellingGeneralAndAdministrative: item.sellingGeneralAndAdministration ? { fmt: item.sellingGeneralAndAdministration.toString(), raw: item.sellingGeneralAndAdministration } : undefined,
+        operatingExpense: item.operatingExpense ? { fmt: item.operatingExpense.toString(), raw: item.operatingExpense } : undefined,
+        otherOperatingExpenses: item.otherOperatingExpenses ? { fmt: item.otherOperatingExpenses.toString(), raw: item.otherOperatingExpenses } : undefined,
+        nonRecurringEvents: item.totalUnusualItems ? { fmt: item.totalUnusualItems.toString(), raw: item.totalUnusualItems } : undefined,
+        nonOperatingInterestIncome: item.interestIncomeNonOperating ? { fmt: item.interestIncomeNonOperating.toString(), raw: item.interestIncomeNonOperating } : undefined,
+        otherIncomeExpense: item.otherIncomeExpense ? { fmt: item.otherIncomeExpense.toString(), raw: item.otherIncomeExpense } : undefined
+      };
+
+      dataArray.push(periodData as any);
+    }
+
     return isData;
   } catch (error) {
     if (error instanceof YahooFinanceError) {
@@ -359,11 +438,14 @@ async function fetchCashFlowStatement(
 ): Promise<CashFlowStatement> {
   try {
     const yf = new YahooFinance();
-    const result = await yf.quoteSummary(symbol, {
-      modules: frequency === 'annual' ? ['cashflowStatementHistory'] : ['cashflowStatementHistoryQuarterly']
+    // Use a date far in past to get all available historical data
+    const result = await yf.fundamentalsTimeSeries(symbol, {
+      module: 'cash-flow',
+      type: frequency,
+      period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result?.cashflowStatementHistory) {
+    if (!result || result.length === 0) {
       throw new YahooFinanceError(
         `Cash flow statement data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -375,7 +457,40 @@ async function fetchCashFlowStatement(
       );
     }
 
-    const cfData = result.cashflowStatementHistory as unknown as CashFlowStatement;
+    // Convert fundamentalsTimeSeries format to legacy CashFlowStatement format
+    const cfData: CashFlowStatement = {
+      maxAge: 0,
+      annual: [],
+      quarterly: []
+    };
+
+    const dataArray = frequency === 'annual' ? cfData.annual : cfData.quarterly;
+
+    // Cast result to CashFlow type
+    for (const item of result as any) {
+      const periodData: Record<string, unknown> = {
+        endDate: {
+          fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
+          raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
+        },
+        totalCashFromOperatingActivities: item.operatingCashFlow ? { fmt: item.operatingCashFlow.toString(), raw: item.operatingCashFlow } : undefined,
+        capitalExpenditures: item.capitalExpenditure ? { fmt: item.capitalExpenditure.toString(), raw: item.capitalExpenditure } : undefined,
+        totalCashFromFinancingActivities: item.cashFlowFromContinuingFinancingActivities ? { fmt: item.cashFlowFromContinuingFinancingActivities.toString(), raw: item.cashFlowFromContinuingFinancingActivities } : undefined,
+        totalCashFromInvestingActivities: item.cashFlowFromContinuingInvestingActivities ? { fmt: item.cashFlowFromContinuingInvestingActivities.toString(), raw: item.cashFlowFromContinuingInvestingActivities } : undefined,
+        depreciation: item.depreciationAndAmortization ? { fmt: item.depreciationAndAmortization.toString(), raw: item.depreciationAndAmortization } : undefined,
+        dividendsPaid: item.commonStockDividendPaid ? { fmt: item.commonStockDividendPaid.toString(), raw: item.commonStockDividendPaid } : undefined,
+        stockRepurchases: item.repurchaseOfCapitalStock ? { fmt: item.repurchaseOfCapitalStock.toString(), raw: item.repurchaseOfCapitalStock } : undefined,
+        changeInCash: item.changesInCash ? { fmt: item.changesInCash.toString(), raw: item.changesInCash } : undefined,
+        freeCashFlow: item.freeCashFlow ? { fmt: item.freeCashFlow.toString(), raw: item.freeCashFlow } : undefined,
+        netBorrowings: item.netIssuancePaymentsOfDebt ? { fmt: item.netIssuancePaymentsOfDebt.toString(), raw: item.netIssuancePaymentsOfDebt } : undefined,
+        otherCashflowsFromInvestingActivities: item.netOtherInvestingChanges ? { fmt: item.netOtherInvestingChanges.toString(), raw: item.netOtherInvestingChanges } : undefined,
+        otherCashflowsFromFinancingActivities: item.netOtherFinancingCharges ? { fmt: item.netOtherFinancingCharges.toString(), raw: item.netOtherFinancingCharges } : undefined,
+        effectOfExchangeRateOnCash: item.effectOfExchangeRateChanges ? { fmt: item.effectOfExchangeRateChanges.toString(), raw: item.effectOfExchangeRateChanges } : undefined
+      };
+
+      dataArray.push(periodData as any);
+    }
+
     return cfData;
   } catch (error) {
     if (error instanceof YahooFinanceError) {

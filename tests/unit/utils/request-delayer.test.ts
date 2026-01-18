@@ -35,6 +35,7 @@ describe('RequestDelayer', () => {
   test('should handle zero delay', async () => {
     delayer = new RequestDelayer(0);
     const promise = delayer.delay();
+    jest.advanceTimersByTime(0);
     await expect(promise).resolves.toBeUndefined();
   });
 
@@ -49,11 +50,13 @@ describe('RequestDelayer', () => {
     expect(delayer.getDelay()).toBe(1500);
   });
 
-  test('should track delay count', () => {
+  test('should track delay count', async () => {
     delayer = new RequestDelayer(1000);
     expect(delayer.getDelayCount()).toBe(0);
 
-    delayer.delay();
+    const promise = delayer.delay();
+    jest.advanceTimersByTime(1000);
+    await promise;
     expect(delayer.getDelayCount()).toBe(1);
   });
 
@@ -65,11 +68,15 @@ describe('RequestDelayer', () => {
     expect(delayer.getDelayCount()).toBe(0);
   });
 
-  test('should calculate average delay', () => {
+  test('should calculate average delay', async () => {
     delayer = new RequestDelayer(1000);
-    delayer.delay();
+    const promise1 = delayer.delay();
+    jest.advanceTimersByTime(1000);
+    await promise1;
     delayer.setDelay(2000);
-    delayer.delay();
+    const promise2 = delayer.delay();
+    jest.advanceTimersByTime(2000);
+    await promise2;
 
     expect(delayer.getAverageDelay()).toBe(1500);
   });
@@ -79,15 +86,20 @@ describe('RequestDelayer', () => {
     expect(delayer.getAverageDelay()).toBe(0);
   });
 
-  test('should get stats', () => {
+  test('should get stats', async () => {
     delayer = new RequestDelayer(1000);
-    delayer.delay();
+    const promise1 = delayer.delay();
+    jest.advanceTimersByTime(1000);
+    await promise1;
     delayer.setDelay(2000);
+    const promise2 = delayer.delay();
+    jest.advanceTimersByTime(2000);
+    await promise2;
 
     const stats = delayer.getStats();
     expect(stats.currentDelay).toBe(2000);
-    expect(stats.delayCount).toBe(1);
-    expect(stats.averageDelay).toBe(1000);
+    expect(stats.delayCount).toBe(2);
+    expect(stats.averageDelay).toBe(1500);
   });
 
   test('should handle multiple delays', async () => {
@@ -108,6 +120,7 @@ describe('RequestDelayer', () => {
     delayer = new RequestDelayer(5000);
     const promise = delayer.delay();
     delayer.cancel();
+    jest.advanceTimersByTime(0);
 
     await expect(promise).rejects.toThrow('Delay cancelled');
   });

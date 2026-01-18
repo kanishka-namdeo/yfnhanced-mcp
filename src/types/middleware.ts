@@ -96,6 +96,8 @@ export type RetryAttempt = {
   delayMs: number;
   error: Error;
   timestamp: Date;
+  errorType?: string;
+  isRetryable?: boolean;
   [key: string]: unknown;
 };
 

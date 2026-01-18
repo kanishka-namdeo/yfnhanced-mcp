@@ -3,8 +3,8 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
-import { mockQuoteResponse, mockQuoteSummaryResponse, mockEarningsResponse, mockAnalysisResponse, mockHoldersResponse, mockNewsResponse, mockOptionsResponse, mockBalanceSheetResponse, mockIncomeStatementResponse, mockCashFlowStatementResponse, mockSummaryProfileResponse, mockCryptoQuoteResponse, mockForexQuoteResponse, mockTrendingResponse, mockScreenerResponse } from '../fixtures/mock-responses.js';
-import { validSymbols, cryptoSymbols, forexPairs, quoteFields, newsCounts, optionExpirationDates, strikeFilters, moduleCombinations, testPeriods, testLimits, timeoutValues } from '../fixtures/test-data.js';
+import { mockQuoteResponse, mockQuoteSummaryResponse, mockEarningsResponse, mockAnalysisResponse, mockHoldersResponse, mockNewsResponse, mockOptionsResponse, mockBalanceSheetResponse, mockIncomeStatementResponse, mockCashFlowStatementResponse, mockSummaryProfileResponse, mockCryptoQuoteResponse, mockForexQuoteResponse, mockTrendingResponse, mockScreenerResponse } from '../fixtures/mock-responses.ts';
+import { validSymbols, cryptoSymbols, forexPairs, quoteFields, newsCounts, optionExpirationDates, strikeFilters, moduleCombinations, testPeriods, testLimits, timeoutValues } from '../fixtures/test-data.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

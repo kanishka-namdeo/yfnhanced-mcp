@@ -10,6 +10,8 @@ export const YF_ERR_CIRCUIT_OPEN = 'YF_ERR_CIRCUIT_OPEN';
 export const YF_ERR_CACHE_STALE = 'YF_ERR_CACHE_STALE';
 export const YF_ERR_UNKNOWN = 'YF_ERR_UNKNOWN';
 export const YF_ERR_MAX_RETRIES_EXCEEDED = 'YF_ERR_MAX_RETRIES_EXCEEDED';
+export const YF_ERR_COOKIE_ERROR = 'YF_ERR_COOKIE_ERROR';
+export const YF_ERR_PARTIAL_DATA = 'YF_ERR_PARTIAL_DATA';
 
 export type ErrorCodeType =
   | typeof YF_ERR_RATE_LIMIT
@@ -23,7 +25,23 @@ export type ErrorCodeType =
   | typeof YF_ERR_CIRCUIT_OPEN
   | typeof YF_ERR_CACHE_STALE
   | typeof YF_ERR_UNKNOWN
-  | typeof YF_ERR_MAX_RETRIES_EXCEEDED;
+  | typeof YF_ERR_MAX_RETRIES_EXCEEDED
+  | typeof YF_ERR_COOKIE_ERROR
+  | typeof YF_ERR_PARTIAL_DATA;
+
+export type DataWarning = {
+  field: string;
+  severity: 'warning' | 'info';
+  message: string;
+  timestamp: Date;
+};
+
+export type PartialDataResult<T> = {
+  data: T | null;
+  warnings: DataWarning[];
+  isPartial: boolean;
+  hasData: boolean;
+};
 
 export class YahooFinanceError extends Error {
   code: ErrorCodeType;
@@ -33,6 +51,8 @@ export class YahooFinanceError extends Error {
   context: Record<string, unknown>;
   timestamp: Date;
   suggestedAction: string;
+  warnings?: DataWarning[];
+  partialData?: unknown;
 
   constructor(
     message: string,
@@ -41,7 +61,9 @@ export class YahooFinanceError extends Error {
     isRetryable: boolean,
     isRateLimit: boolean,
     context: Record<string, unknown> = {},
-    suggestedAction: string
+    suggestedAction: string,
+    warnings?: DataWarning[],
+    partialData?: unknown
   ) {
     super(message);
     this.name = 'YahooFinanceError';
@@ -52,6 +74,8 @@ export class YahooFinanceError extends Error {
     this.context = context;
     this.timestamp = new Date();
     this.suggestedAction = suggestedAction;
+    this.warnings = warnings;
+    this.partialData = partialData;
     Object.setPrototypeOf(this, YahooFinanceError.prototype);
   }
 
@@ -65,7 +89,18 @@ export class YahooFinanceError extends Error {
       isRateLimit: this.isRateLimit,
       context: this.context,
       timestamp: this.timestamp.toISOString(),
-      suggestedAction: this.suggestedAction
+      suggestedAction: this.suggestedAction,
+      warnings: this.warnings,
+      hasPartialData: this.partialData !== undefined
+    };
+  }
+
+  getPartialData<T>(): PartialDataResult<T> {
+    return {
+      data: (this.partialData as T) ?? null,
+      warnings: this.warnings ?? [],
+      isPartial: this.partialData !== undefined,
+      hasData: this.partialData !== undefined
     };
   }
 }

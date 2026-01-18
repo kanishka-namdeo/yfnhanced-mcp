@@ -2,8 +2,8 @@ import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globa
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
-import { timeoutValues, retryConfigs, backoffStrategies } from '../fixtures/test-data.js';
+import { promises as fs } from 'fs';
+import { timeoutValues, retryConfigs, backoffStrategies } from '../fixtures/test-data.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,10 +26,12 @@ describe('Timeout Chaos Tests', () => {
   });
 
   async function startServer(port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const serverPath = path.join(__dirname, '../../dist/index.js');
 
-      if (!existsSync(serverPath)) {
+      try {
+        await fs.access(serverPath);
+      } catch {
         reject(new Error('Server build not found. Run "npm run build" first.'));
         return;
       }

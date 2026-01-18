@@ -3,7 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
-import { networkFailureScenarios } from '../fixtures/test-data.js';
+import { networkFailureScenarios } from '../fixtures/test-data.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

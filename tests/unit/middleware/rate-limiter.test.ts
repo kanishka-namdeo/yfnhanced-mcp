@@ -151,7 +151,7 @@ describe('AdaptiveThrottling', () => {
   });
 
   test('should increase limit after consecutive successes', () => {
-    const throttling = new AdaptiveThrottling(100, 25, 100);
+    const throttling = new AdaptiveThrottling(100, 25, 200);
     throttling.consecutiveSuccesses = 5;
     throttling.increaseLimit();
     expect(throttling.getCurrentLimit()).toBeGreaterThan(100);

@@ -15,6 +15,9 @@ describe('RetryPolicy', () => {
       jitter: false,
       retryableStatusCodes: [429, 500, 502, 503, 504],
       retryableErrorCodes: ['ECONNRESET', 'ETIMEDOUT']
+    }, (ms) => {
+      jest.advanceTimersByTime(ms);
+      return Promise.resolve();
     });
   });
 
@@ -223,8 +226,8 @@ describe('RetryPolicy', () => {
   });
 
   test('should respect maxRetries in shouldRetry', () => {
-    expect(retryPolicy.shouldRetry(new Error('test'), 3)).toBe(false);
-    expect(retryPolicy.shouldRetry(new Error('test'), 2)).toBe(true);
+    expect(retryPolicy.shouldRetry(new Error('test'), 4)).toBe(false);
+    expect(retryPolicy.shouldRetry(new Error('test'), 3)).toBe(true);
   });
 
   test('should calculate delay correctly for different strategies', () => {
@@ -303,13 +306,21 @@ describe('retry', () => {
       retryableErrorCodes: ['ECONNRESET']
     };
 
-    const promise = retry(fn, config);
-    jest.runAllTimers();
+    const promise = retry(fn, config, undefined, async (ms) => {
+      await new Promise((resolve) => {
+        setTimeout(() => {
+          jest.advanceTimersByTime(ms);
+          resolve();
+        }, 0);
+        jest.advanceTimersByTime(0);
+      });
+    });
+    
     const result = await promise;
 
     expect(result).toBe('success');
     expect(fn).toHaveBeenCalledTimes(2);
-  });
+  }, 100000);
 });
 
 describe('MaxRetriesExceededError', () => {

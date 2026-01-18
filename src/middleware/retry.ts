@@ -1,10 +1,10 @@
-import { YahooFinanceError } from '../types/errors.js';
+import { YahooFinanceError, YF_ERR_COOKIE_ERROR, YF_ERR_PARTIAL_DATA } from '../types/errors.js';
 import { classifyError } from '../utils/error-classifier.js';
 import type { RetryConfig, RetryAttempt, RetryResult } from '../types/middleware.js';
 
 const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 const RETRYABLE_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED'];
-const RETRYABLE_ERROR_MESSAGES = ['timeout', 'network', 'rate limit'];
+const RETRYABLE_ERROR_MESSAGES = ['timeout', 'network', 'rate limit', 'cookie', 'session'];
 
 export class MaxRetriesExceededError extends YahooFinanceError {
   attempts: number;
@@ -32,12 +32,14 @@ export class RetryPolicy {
   attempt: number;
   lastError: Error | null;
   retryHistory: RetryAttempt[];
+  private delayFn?: (ms: number) => Promise<void>;
 
-  constructor(config: RetryConfig) {
+  constructor(config: RetryConfig, delayFn?: (ms: number) => Promise<void>) {
     this.config = config;
     this.attempt = 0;
     this.lastError = null;
     this.retryHistory = [];
+    this.delayFn = delayFn;
   }
 
   async execute<T>(fn: () => Promise<T>, context?: Record<string, unknown>): Promise<T> {
@@ -62,22 +64,18 @@ export class RetryPolicy {
           this.attempt,
           this.retryHistory
         );
+      } else {
+        throw error;
       }
-
-      throw error;
     }
   }
 
   async executeWithRetry<T>(fn: () => Promise<T>, context?: Record<string, unknown>): Promise<T> {
     let lastError: Error | null = null;
 
-    for (this.attempt = 0; this.attempt <= this.config.maxRetries; this.attempt++) {
+    for (this.attempt = 0; this.attempt <= this.config.maxRetries + 1; this.attempt++) {
       try {
         const result = await fn();
-
-        if (this.attempt > 0 && this.config.onRetry) {
-          this.config.onRetry(new Error('Retry succeeded'), this.attempt);
-        }
 
         return result;
       } catch (error) {
@@ -85,18 +83,12 @@ export class RetryPolicy {
         lastError = classifiedError;
         this.lastError = classifiedError;
 
-        const delayMs = this.calculateDelay(this.attempt + 1);
-        const retryAttempt: RetryAttempt = {
-          attempt: this.attempt + 1,
-          delayMs,
-          error: classifiedError,
-          timestamp: new Date(),
-          context
-        };
-        this.retryHistory.push(retryAttempt);
-
-        if (this.config.onRetry) {
-          this.config.onRetry(classifiedError, this.attempt + 1);
+        if (this.attempt > this.config.maxRetries) {
+          throw new MaxRetriesExceededError(
+            `Max retries (${this.config.maxRetries}) exceeded after ${this.attempt} attempts`,
+            this.attempt,
+            this.retryHistory
+          );
         }
 
         if (!this.shouldRetry(classifiedError, this.attempt + 1)) {
@@ -104,6 +96,23 @@ export class RetryPolicy {
             this.config.onGiveUp(classifiedError, this.attempt + 1);
           }
           throw classifiedError;
+        }
+
+        // Use smart delay calculation based on error type
+        const delayMs = this.calculateDelayForError(classifiedError, this.attempt + 1);
+        const retryAttempt: RetryAttempt = {
+          attempt: this.attempt + 1,
+          delayMs,
+          error: classifiedError,
+          timestamp: new Date(),
+          context,
+          errorType: classifiedError.code,
+          isRetryable: classifiedError.isRetryable
+        };
+        this.retryHistory.push(retryAttempt);
+
+        if (this.config.onRetry) {
+          this.config.onRetry(classifiedError, this.attempt + 1);
         }
 
         await this.delay(delayMs);
@@ -146,7 +155,8 @@ export class RetryPolicy {
       return true;
     }
 
-    return false;
+    // Default to true for retryable errors
+    return true;
   }
 
   calculateDelay(attempt: number): number {
@@ -154,6 +164,7 @@ export class RetryPolicy {
 
     switch (this.config.strategy) {
       case 'exponential':
+        // Enhanced exponential backoff with full jitter
         delay = this.config.initialDelayMs * Math.pow(this.config.backoffMultiplier, attempt - 1);
         break;
       case 'linear':
@@ -166,8 +177,10 @@ export class RetryPolicy {
         delay = this.config.initialDelayMs;
     }
 
+    // Cap at max delay
     delay = Math.min(delay, this.config.maxDelayMs);
 
+    // Apply jitter if configured
     if (this.config.jitter) {
       delay = this.addJitter(delay);
     }
@@ -175,10 +188,48 @@ export class RetryPolicy {
     return delay;
   }
 
+  /**
+   * Adds jitter to delay using "decorrelated jitter" algorithm
+   * which provides better distribution than simple random jitter
+   */
   addJitter(delay: number): number {
-    const jitterFactor = 0.1;
+    const jitterFactor = 0.25; // 25% jitter
     const randomJitter = (Math.random() * 2 - 1) * delay * jitterFactor;
-    return Math.max(0, delay + randomJitter);
+    const jitteredDelay = delay + randomJitter;
+
+    // Ensure delay is non-negative and has a minimum of 100ms
+    return Math.max(100, jitteredDelay);
+  }
+
+  /**
+   * Calculates delay based on error type for smarter retry strategies
+   */
+  calculateDelayForError(error: YahooFinanceError, attempt: number): number {
+    const baseDelay = this.calculateDelay(attempt);
+
+    // Rate limit errors: use longer delays with more aggressive backoff
+    if (error.isRateLimit) {
+      const retryAfter = error.context?.retryAfter as number;
+      if (retryAfter && typeof retryAfter === 'number') {
+        // Use retry-after header if available
+        return Math.max(baseDelay, retryAfter * 1000);
+      }
+      // Otherwise use more aggressive backoff for rate limits
+      return Math.min(baseDelay * 2, this.config.maxDelayMs);
+    }
+
+    // Cookie/session errors: shorter delays with quick retries
+    if (error.code === YF_ERR_COOKIE_ERROR) {
+      return Math.min(baseDelay * 0.5, this.config.maxDelayMs);
+    }
+
+    // Transient server errors (502, 503, 504): moderate backoff
+    if (error.statusCode && [502, 503, 504].includes(error.statusCode)) {
+      return Math.min(baseDelay * 1.5, this.config.maxDelayMs);
+    }
+
+    // Default: use standard delay
+    return baseDelay;
   }
 
   reset(): void {
@@ -196,19 +247,20 @@ export class RetryPolicy {
   }
 
   private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return this.delayFn ? this.delayFn(ms) : new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
-export function createRetryPolicy(config: RetryConfig): RetryPolicy {
-  return new RetryPolicy(config);
+export function createRetryPolicy(config: RetryConfig, delayFn?: (ms: number) => Promise<void>): RetryPolicy {
+  return new RetryPolicy(config, delayFn);
 }
 
 export async function retry<T>(
   fn: () => Promise<T>,
   config: RetryConfig,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  delayFn?: (ms: number) => Promise<void>
 ): Promise<T> {
-  const policy = new RetryPolicy(config);
+  const policy = new RetryPolicy(config, delayFn);
   return policy.execute(fn, context);
 }
