@@ -88,3 +88,12 @@ Desktop.ini
 # Agent and prompt files
 AGENTS.md
 master-prompt.md
+
+# Development and testing files
+test-mcp-client.js
+*-TEST-REPORT.md
+*-TEST_REPORT.md
+
+# User-specific configuration (keep .example files)
+config.json
+config.yaml
