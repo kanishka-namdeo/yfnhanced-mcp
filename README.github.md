@@ -73,8 +73,8 @@ Or if running from source:
   "mcpServers": {
     "yahoo-finance": {
       "command": "node",
-      "args": ["D:\\path\\to\\yahoo-finance-mcp\\dist\\index.js"],
-      "cwd": "D:\\path\\to\\yahoo-finance-mcp"
+      "args": ["absolute:\\path\\to\\yahoo-finance-mcp\\dist\\index.js"],
+      "cwd": "absolute:\\path\\to\\yahoo-finance-mcp"
     }
   }
 }
@@ -334,7 +334,7 @@ MIT
 - [Yahoo Finance](https://finance.yahoo.com/)
 - [MCP Protocol Documentation](https://modelcontextprotocol.io/)
 - [yahoo-finance2 Library](https://github.com/gadicc/yahoo-finance2)
-- [Issue Tracker](https://github.com/your-repo/issues)
+- [Issue Tracker](https://github.com/kanishka-namdeo/yfnhanced-mcp/issues)
 
 ---
 

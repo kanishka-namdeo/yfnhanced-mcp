@@ -25,8 +25,8 @@ Practical guide to using Yahoo Finance MCP Server in your applications.
 
 ```bash
 # Clone repository
-git clone https://github.com/your-repo/yahoo-finance-mcp.git
-cd yahoo-finance-mcp
+git clone https://github.com/kanishka-namdeo/yfnhanced-mcp.git
+cd yfnhanced-mcp
 
 # Install dependencies
 npm install
@@ -638,7 +638,7 @@ npm run test:coverage
 - [DATA_VERIFICATION.md](DATA_VERIFICATION.md) - Data verification status
 
 **4. Report Issues**
-- [Issue Tracker](https://github.com/your-repo/issues)
+- [Issue Tracker](https://github.com/kanishka-namdeo/yfnhanced-mcp/issues)
 - Include logs, configuration, and reproduction steps
 
 ---

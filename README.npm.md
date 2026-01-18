@@ -83,14 +83,14 @@ Add to your `claude_desktop_config.json`:
 
 For complete documentation including configuration, usage examples, architecture details, and best practices:
 
-**[View Full Documentation on GitHub](https://github.com/your-username/y-finance-mcp)**
+**[View Full Documentation on GitHub](https://github.com/kanishka-namdeo/yfnhanced-mcp)**
 
 Documentation includes:
-- [Complete Tool Reference](https://github.com/your-username/y-finance-mcp/blob/main/docs/TOOLS.md)
-- [Usage Guide with Examples](https://github.com/your-username/y-finance-mcp/blob/main/docs/USAGE_GUIDE.md)
-- [Configuration Guide](https://github.com/your-username/y-finance-mcp/blob/main/docs/CONFIGURATION.md)
-- [Architecture Details](https://github.com/your-username/y-finance-mcp/blob/main/docs/ARCHITECTURE.md)
-- [Data Verification Status](https://github.com/your-username/y-finance-mcp/blob/main/docs/DATA_VERIFICATION.md)
+- [Complete Tool Reference](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/TOOLS.md)
+- [Usage Guide with Examples](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/USAGE_GUIDE.md)
+- [Configuration Guide](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/CONFIGURATION.md)
+- [Architecture Details](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/ARCHITECTURE.md)
+- [Data Verification Status](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/DATA_VERIFICATION.md)
 
 ## Configuration
 
@@ -132,7 +132,7 @@ MIT
 
 ## Links
 
-- [GitHub Repository](https://github.com/your-username/y-finance-mcp)
+- [GitHub Repository](https://github.com/kanishka-namdeo/yfnhanced-mcp)
 - [npm Package](https://www.npmjs.com/package/yfnhanced-mcp)
 - [MCP Protocol](https://modelcontextprotocol.io/)
-- [Report Issues](https://github.com/your-username/y-finance-mcp/issues)
+- [Report Issues](https://github.com/kanishka-namdeo/yfnhanced-mcp/issues)
