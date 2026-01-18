@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pino-debug.log*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Docker
+.dockerignore
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+*.test.ts.snap

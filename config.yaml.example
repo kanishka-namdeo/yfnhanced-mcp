@@ -1,0 +1,256 @@
+# Yahoo Finance MCP Server Configuration Example
+# Copy this file to config.yaml and adjust values as needed
+
+# Rate limiting configuration to prevent API abuse
+rateLimit:
+  # Maximum number of requests allowed per minute
+  # Recommended: 60-120
+  requestsPerMinute: 60
+
+  # Maximum number of requests allowed per hour
+  # Recommended: 1500-2000
+  requestsPerHour: 1500
+
+  # Maximum requests allowed in a short burst
+  # Recommended: 5-10
+  burstLimit: 5
+
+  # Multiplier for exponential backoff
+  # Recommended: 1.5-2.5
+  backoffMultiplier: 2
+
+  # Maximum backoff time in seconds
+  # Recommended: 300-600
+  maxBackoffSeconds: 300
+
+  # Number of retries before giving up
+  # Recommended: 3-5
+  retryCount: 3
+
+  # Failures before circuit breaker opens
+  # Recommended: 5-10
+  circuitBreakerThreshold: 5
+
+  # Time in ms before circuit breaker resets
+  # Recommended: 60000-120000
+  circuitBreakerResetMs: 60000
+
+# Cache configuration for different data types
+cache:
+  # Time to live for quote data in milliseconds (60s)
+  # Recommended: 30000-120000
+  ttlQuotes: 60000
+
+  # Time to live for historical data in milliseconds (1h)
+  # Recommended: 3600000-7200000
+  ttlHistorical: 3600000
+
+  # Time to live for financial data in milliseconds (24h)
+  # Recommended: 86400000-172800000
+  ttlFinancials: 86400000
+
+  # Time to live for news data in milliseconds (5m)
+  # Recommended: 180000-600000
+  ttlNews: 300000
+
+  # Time to live for analysis data in milliseconds (1h)
+  # Recommended: 1800000-7200000
+  ttlAnalysis: 3600000
+
+  # Maximum number of entries in cache
+  # Recommended: 500-2000
+  maxCacheSize: 1000
+
+  # Cache eviction strategy: 'lru', 'lfu', or 'fifo'
+  # Recommended: 'lru'
+  cacheStrategy: lru
+
+# Retry configuration for failed requests
+retry:
+  # Maximum number of retry attempts
+  # Recommended: 3-5
+  maxRetries: 3
+
+  # Initial delay between retries in milliseconds
+  # Recommended: 500-2000
+  baseDelay: 1000
+
+  # Maximum delay between retries in milliseconds
+  # Recommended: 15000-60000
+  maxDelay: 30000
+
+  # Add randomness to retry delays to prevent thundering herd
+  # Recommended: true
+  jitter: true
+
+  # Randomness factor (0-1)
+  # Recommended: 0.1-0.3
+  jitterFactor: 0.1
+
+  # HTTP status codes that trigger retries
+  retryableStatusCodes:
+    - 429  # Too Many Requests
+    - 500  # Internal Server Error
+    - 502  # Bad Gateway
+    - 503  # Service Unavailable
+    - 504  # Gateway Timeout
+
+  # Network error codes that trigger retries
+  retryableErrors:
+    - ECONNRESET    # Connection reset
+    - ETIMEDOUT     # Connection timeout
+    - ENOTFOUND     # DNS lookup failed
+    - ECONNREFUSED  # Connection refused
+
+# Circuit breaker configuration to prevent cascading failures
+circuitBreaker:
+  # Number of failures before opening circuit
+  # Recommended: 5-10
+  failureThreshold: 5
+
+  # Successes needed to close circuit
+  # Recommended: 2-5
+  successThreshold: 2
+
+  # Time in ms before attempting to close circuit
+  # Recommended: 60000-120000
+  timeout: 60000
+
+  # Time window for monitoring failures in ms
+  # Recommended: 60000-120000
+  monitoringWindow: 60000
+
+# Request queue configuration for managing concurrent requests
+queue:
+  # Maximum concurrent requests
+  # Recommended: 3-10
+  maxConcurrent: 5
+
+  # Maximum queue size
+  # Recommended: 50-200
+  maxQueueSize: 100
+
+  # Number of priority levels
+  # Recommended: 3-5
+  priorityLevels: 3
+
+  # Time in ms before queue request times out
+  # Recommended: 15000-60000
+  queueTimeout: 30000
+
+  # Time in ms to batch requests
+  # Recommended: 50-200
+  batchWindow: 100
+
+# Data completion configuration for handling incomplete responses
+dataCompletion:
+  # Enable fallback mechanisms for missing data
+  # Recommended: true
+  enableFallback: true
+
+  # Priority order for fallback sources
+  fallbackPriority:
+    - cache       # Try cache first
+    - alternative # Try alternative sources
+
+  # Attempt to fill missing fields with calculated values
+  # Recommended: true
+  fillMissingFields: true
+
+  # Validate data completeness before returning
+  # Recommended: true
+  validateCompleteness: true
+
+# Server configuration
+server:
+  # Transport type: 'stdio' or 'sse'
+  # Recommended: 'stdio' for MCP
+  transport: stdio
+
+  # Server port (for SSE transport)
+  # Recommended: 3000-4000
+  port: 3000
+
+  # Server host
+  # Recommended: 'localhost' or '0.0.0.0'
+  host: localhost
+
+  # Logging level: 'debug', 'info', 'warn', 'error'
+  # Recommended: 'info'
+  logLevel: info
+
+  # Enable metrics collection
+  # Recommended: true for production
+  enableMetrics: true
+
+  # Port for metrics endpoint
+  # Recommended: 9090-9100
+  metricsPort: 9090
+
+# Global fallback configuration
+fallback:
+  # Enable fallback mechanisms globally
+  # Recommended: true
+  enabled: true
+
+  # Delay in ms before triggering fallback
+  # Recommended: 3000-10000
+  delay: 5000
+
+# Yahoo Finance API configuration
+yahooFinance:
+  # Yahoo Finance API base URL
+  baseUrl: https://query1.finance.yahoo.com
+
+  # Request timeout in milliseconds
+  # Recommended: 30000-60000
+  timeoutMs: 30000
+
+  # User agent string for requests
+  userAgent: Mozilla/5.0 (compatible; YFinanceMCP/1.0)
+
+  # Maximum concurrent requests to Yahoo Finance
+  # Recommended: 3-10
+  maxConcurrentRequests: 5
+
+  # Request queue size
+  # Recommended: 50-200
+  requestQueueSize: 100
+
+  # Validate Yahoo Finance responses
+  # Recommended: true
+  validateResponses: true
+
+  # Strict mode for validation
+  # Recommended: false for production
+  strictMode: false
+
+# Network configuration
+network:
+  # Default network timeout in milliseconds
+  # Recommended: 30000-60000
+  timeoutMs: 30000
+
+  # Enable HTTP keep-alive
+  # Recommended: true
+  keepAlive: true
+
+  # Keep-alive interval in milliseconds
+  # Recommended: 1000
+  keepAliveMsecs: 1000
+
+  # Maximum sockets per host
+  # Recommended: 50-100
+  maxSockets: 50
+
+  # Maximum free sockets
+  # Recommended: 10-20
+  maxFreeSockets: 10
+
+  # Maximum number of redirects
+  # Recommended: 5-10
+  maxRedirects: 5
+
+  # Follow HTTP redirects
+  # Recommended: true
+  followRedirects: true

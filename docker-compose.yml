@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  y-finance-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: y-finance-mcp
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - MCP_TRANSPORT=stdio
+    volumes:
+      # Mount for development (comment out in production)
+      - ./src:/app/src:ro
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # For development with hot reload (use dev stage)
+    # command: npm run dev
+
+  # Optional: Development service with hot reload
+  y-finance-mcp-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: y-finance-mcp-dev
+    profiles:
+      - dev
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug
+    volumes:
+      - ./src:/app/src
+      - ./node_modules:/app/node_modules
+    command: npm run dev
+    networks:
+      - mcp-network
+    stdin_open: true
+    tty: true
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  # Preserve node_modules for development
+  node_modules:

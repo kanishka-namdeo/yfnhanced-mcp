@@ -1,0 +1,159 @@
+{
+  "$schema": "./config.schema.json",
+  "_comment": "Yahoo Finance MCP Server Configuration Example",
+  "_comment": "Copy this file to config.json and adjust values as needed",
+
+  "rateLimit": {
+    "_comment": "Rate limiting configuration to prevent API abuse",
+    "requestsPerMinute": 60,
+    "_comment_requestsPerMinute": "Maximum number of requests allowed per minute. Recommended: 60-120",
+    "requestsPerHour": 1500,
+    "_comment_requestsPerHour": "Maximum number of requests allowed per hour. Recommended: 1500-2000",
+    "burstLimit": 5,
+    "_comment_burstLimit": "Maximum requests allowed in a short burst. Recommended: 5-10",
+    "backoffMultiplier": 2,
+    "_comment_backoffMultiplier": "Multiplier for exponential backoff. Recommended: 1.5-2.5",
+    "maxBackoffSeconds": 300,
+    "_comment_maxBackoffSeconds": "Maximum backoff time in seconds. Recommended: 300-600",
+    "retryCount": 3,
+    "_comment_retryCount": "Number of retries before giving up. Recommended: 3-5",
+    "circuitBreakerThreshold": 5,
+    "_comment_circuitBreakerThreshold": "Failures before circuit breaker opens. Recommended: 5-10",
+    "circuitBreakerResetMs": 60000,
+    "_comment_circuitBreakerResetMs": "Time in ms before circuit breaker resets. Recommended: 60000-120000"
+  },
+
+  "cache": {
+    "_comment": "Cache configuration for different data types",
+    "ttlQuotes": 60000,
+    "_comment_ttlQuotes": "Time to live for quote data in milliseconds (60s). Recommended: 30000-120000",
+    "ttlHistorical": 3600000,
+    "_comment_ttlHistorical": "Time to live for historical data in milliseconds (1h). Recommended: 3600000-7200000",
+    "ttlFinancials": 86400000,
+    "_comment_ttlFinancials": "Time to live for financial data in milliseconds (24h). Recommended: 86400000-172800000",
+    "ttlNews": 300000,
+    "_comment_ttlNews": "Time to live for news data in milliseconds (5m). Recommended: 180000-600000",
+    "ttlAnalysis": 3600000,
+    "_comment_ttlAnalysis": "Time to live for analysis data in milliseconds (1h). Recommended: 1800000-7200000",
+    "maxCacheSize": 1000,
+    "_comment_maxCacheSize": "Maximum number of entries in cache. Recommended: 500-2000",
+    "cacheStrategy": "lru",
+    "_comment_cacheStrategy": "Cache eviction strategy: 'lru', 'lfu', or 'fifo'. Recommended: 'lru'"
+  },
+
+  "retry": {
+    "_comment": "Retry configuration for failed requests",
+    "maxRetries": 3,
+    "_comment_maxRetries": "Maximum number of retry attempts. Recommended: 3-5",
+    "baseDelay": 1000,
+    "_comment_baseDelay": "Initial delay between retries in milliseconds. Recommended: 500-2000",
+    "maxDelay": 30000,
+    "_comment_maxDelay": "Maximum delay between retries in milliseconds. Recommended: 15000-60000",
+    "jitter": true,
+    "_comment_jitter": "Add randomness to retry delays to prevent thundering herd. Recommended: true",
+    "jitterFactor": 0.1,
+    "_comment_jitterFactor": "Randomness factor (0-1). Recommended: 0.1-0.3",
+    "retryableStatusCodes": [429, 500, 502, 503, 504],
+    "_comment_retryableStatusCodes": "HTTP status codes that trigger retries",
+    "retryableErrors": ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED"],
+    "_comment_retryableErrors": "Network error codes that trigger retries"
+  },
+
+  "circuitBreaker": {
+    "_comment": "Circuit breaker configuration to prevent cascading failures",
+    "failureThreshold": 5,
+    "_comment_failureThreshold": "Number of failures before opening circuit. Recommended: 5-10",
+    "successThreshold": 2,
+    "_comment_successThreshold": "Successes needed to close circuit. Recommended: 2-5",
+    "timeout": 60000,
+    "_comment_timeout": "Time in ms before attempting to close circuit. Recommended: 60000-120000",
+    "monitoringWindow": 60000,
+    "_comment_monitoringWindow": "Time window for monitoring failures in ms. Recommended: 60000-120000"
+  },
+
+  "queue": {
+    "_comment": "Request queue configuration for managing concurrent requests",
+    "maxConcurrent": 5,
+    "_comment_maxConcurrent": "Maximum concurrent requests. Recommended: 3-10",
+    "maxQueueSize": 100,
+    "_comment_maxQueueSize": "Maximum queue size. Recommended: 50-200",
+    "priorityLevels": 3,
+    "_comment_priorityLevels": "Number of priority levels. Recommended: 3-5",
+    "queueTimeout": 30000,
+    "_comment_queueTimeout": "Time in ms before queue request times out. Recommended: 15000-60000",
+    "batchWindow": 100,
+    "_comment_batchWindow": "Time in ms to batch requests. Recommended: 50-200"
+  },
+
+  "dataCompletion": {
+    "_comment": "Data completion configuration for handling incomplete responses",
+    "enableFallback": true,
+    "_comment_enableFallback": "Enable fallback mechanisms for missing data. Recommended: true",
+    "fallbackPriority": ["cache", "alternative"],
+    "_comment_fallbackPriority": "Priority order for fallback sources",
+    "fillMissingFields": true,
+    "_comment_fillMissingFields": "Attempt to fill missing fields with calculated values. Recommended: true",
+    "validateCompleteness": true,
+    "_comment_validateCompleteness": "Validate data completeness before returning. Recommended: true"
+  },
+
+  "server": {
+    "_comment": "Server configuration",
+    "transport": "stdio",
+    "_comment_transport": "Transport type: 'stdio' or 'sse'. Recommended: 'stdio' for MCP",
+    "port": 3000,
+    "_comment_port": "Server port (for SSE transport). Recommended: 3000-4000",
+    "host": "localhost",
+    "_comment_host": "Server host. Recommended: 'localhost' or '0.0.0.0'",
+    "logLevel": "info",
+    "_comment_logLevel": "Logging level: 'debug', 'info', 'warn', 'error'. Recommended: 'info'",
+    "enableMetrics": true,
+    "_comment_enableMetrics": "Enable metrics collection. Recommended: true for production",
+    "metricsPort": 9090,
+    "_comment_metricsPort": "Port for metrics endpoint. Recommended: 9090-9100"
+  },
+
+  "fallback": {
+    "_comment": "Global fallback configuration",
+    "enabled": true,
+    "_comment_enabled": "Enable fallback mechanisms globally. Recommended: true",
+    "delay": 5000,
+    "_comment_delay": "Delay in ms before triggering fallback. Recommended: 3000-10000"
+  },
+
+  "yahooFinance": {
+    "_comment": "Yahoo Finance API configuration",
+    "baseUrl": "https://query1.finance.yahoo.com",
+    "_comment_baseUrl": "Yahoo Finance API base URL",
+    "timeoutMs": 30000,
+    "_comment_timeoutMs": "Request timeout in milliseconds. Recommended: 30000-60000",
+    "userAgent": "Mozilla/5.0 (compatible; YFinanceMCP/1.0)",
+    "_comment_userAgent": "User agent string for requests",
+    "maxConcurrentRequests": 5,
+    "_comment_maxConcurrentRequests": "Maximum concurrent requests to Yahoo Finance. Recommended: 3-10",
+    "requestQueueSize": 100,
+    "_comment_requestQueueSize": "Request queue size. Recommended: 50-200",
+    "validateResponses": true,
+    "_comment_validateResponses": "Validate Yahoo Finance responses. Recommended: true",
+    "strictMode": false,
+    "_comment_strictMode": "Strict mode for validation. Recommended: false for production"
+  },
+
+  "network": {
+    "_comment": "Network configuration",
+    "timeoutMs": 30000,
+    "_comment_timeoutMs": "Default network timeout in milliseconds. Recommended: 30000-60000",
+    "keepAlive": true,
+    "_comment_keepAlive": "Enable HTTP keep-alive. Recommended: true",
+    "keepAliveMsecs": 1000,
+    "_comment_keepAliveMsecs": "Keep-alive interval in milliseconds. Recommended: 1000",
+    "maxSockets": 50,
+    "_comment_maxSockets": "Maximum sockets per host. Recommended: 50-100",
+    "maxFreeSockets": 10,
+    "_comment_maxFreeSockets": "Maximum free sockets. Recommended: 10-20",
+    "maxRedirects": 5,
+    "_comment_maxRedirects": "Maximum number of redirects. Recommended: 5-10",
+    "followRedirects": true,
+    "_comment_followRedirects": "Follow HTTP redirects. Recommended: true"
+  }
+}

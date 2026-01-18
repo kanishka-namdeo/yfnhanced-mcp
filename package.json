@@ -1,0 +1,50 @@
+{
+  "name": "y-finance-mcp",
+  "version": "1.0.0",
+  "description": "Yahoo Finance MCP Server - A Model Context Protocol server for financial data",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "y-finance-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "yahoo-finance",
+    "finance",
+    "stocks"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "yahoo-finance2": "^3.11.2",
+    "zod": "^4.0.0",
+    "winston": "^3.15.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
