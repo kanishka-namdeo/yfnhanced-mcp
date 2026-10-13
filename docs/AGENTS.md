@@ -6,7 +6,7 @@ Long-form design documents for humans: architecture narrative, tool reference, c
 
 ## Ownership
 
-- `ARCHITECTURE.md` — resilience mechanism narrative (rate limiter, circuit breaker, retry, cache), data-quality and security design, plus a project-structure map at `:487-546`.
+- `ARCHITECTURE.md` — resilience mechanism narrative (rate limiter, circuit breaker, retry, cache), data-quality and security design, a project-structure map, and four fenced `mermaid` diagrams: system layers, data-call lifecycle, circuit breaker state machine, and startup ordering.
 - `TOOLS.md` — per-tool parameters and returns, each with a `Location:` pointer to a source file.
 - `CONFIGURATION.md` — `config.json` reference: loading order (`:21-27`) and the environment variable table (`:463-471`).
 - `DATA_VERIFICATION.md` — per-tool and per-field availability, the single source of truth for "does this value actually come back"; `README.md:176` points readers here.
@@ -17,10 +17,10 @@ Long-form design documents for humans: architecture narrative, tool reference, c
 
 - `.npmignore:12` excludes `docs/` and `:14-15` exclude every `*.md` except `README.md`, so nothing in this folder ships in the npm package. Links from `README.npm.md` must resolve on GitHub, not in the tarball.
 - Verified drift against code, to correct whenever these docs are next edited rather than silently inherited:
-  - `ARCHITECTURE.md` references `src/config/schema.ts` (`:493`), `src/prompts/analyze_stock.ts` and `src/prompts/compare_stocks.ts` (`:502-503`), `src/tools/market.ts` (`:527`), and `src/utils/data-quality.ts` (`:286`, `:536`). None of these files exist; the real equivalents are `src/config/validation.ts`, a single `src/prompts/financial.ts` (unwired), `src/tools/summary.ts`, and `src/utils/data-completion.ts`.
+  - `ARCHITECTURE.md` references `src/config/schema.ts`, `src/prompts/analyze_stock.ts` and `src/prompts/compare_stocks.ts`, `src/tools/market.ts`, and `src/utils/data-quality.ts`. None of these files exist; the real equivalents are `src/config/validation.ts`, no prompts module at all (`src/prompts/` was deleted 2026-10-13 and the six live prompts are inline in `src/index.ts`), `src/tools/summary.ts`, and `src/utils/data-completion.ts`.
   - `TOOLS.md:438` and `:470` place trending and screener in `src/tools/market.ts`; they are implemented in `src/tools/summary.ts` and registered at `src/index.ts:286-287`. `TOOLS.md:525` and `:544` place crypto and forex quotes in `src/tools/quotes.ts`; they are `src/index.ts:284-285` routed to `summaryTools`.
-  - `TOOLS.md` documents `get_historical_prices` (`:60-130`) as available, but `HistoricalTools` is never constructed, so that tool is not callable. `get_summary_profile` is callable yet absent here.
-  - Tool-count claims disagree: `ARCHITECTURE.md:27` and `README.md:18` say "13+", `TOOLS.md` lists 16, the registry exposes 15.
+  - `get_historical_prices` and `get_historical_prices_multi` became callable on 2026-10-13, so `TOOLS.md` is now accurate about them. `get_summary_profile` is callable yet still absent from `TOOLS.md`.
+  - Tool-count claims still disagree: the registry exposes 17, `TOOLS.md` lists 16, and `README.config.md` plus the frozen reports carry older numbers. `README.md` and `assets/banner.svg` both state 17.
   - The env table at `CONFIGURATION.md:463-471` lists `RATE_LIMIT_RPM`, `RATE_LIMIT_RPH`, `CACHE_TTL_QUOTES`, `CACHE_MAX_SIZE`, `CIRCUIT_BREAKER_FAILURE_THRESHOLD`, `SERVER_LOG_LEVEL`, `SERVER_TRANSPORT`. The loader only honors names prefixed `YF_MCP_` (`src/config/index.ts:10`), and `logging.*` plus transport are not read at all, so no documented variable works as written. `docker-compose.yml:13-14` uses a third set (`LOG_LEVEL`, `MCP_TRANSPORT`) that is equally unread.
   - `CONFIGURATION.md:21` states all settings are validated at startup using Zod. Validation is real and fatal, but file values are overwritten before validation — see `src/config/AGENTS.md`.
 - `DATA_VERIFICATION.md` marks tools as working (for example `:32`, `:74`, `:537-550`) while `TEST_REPORT.md:24` and `COMPREHENSIVE_TEST_REPORT.md:20-25` record failures. Both reports are frozen 2026-01-18 snapshots and are not a verification source; neither settles the question.

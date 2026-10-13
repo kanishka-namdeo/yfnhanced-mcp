@@ -1,138 +1,112 @@
-# Yahoo Finance MCP Server
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kanishka-namdeo/yfnhanced-mcp/master/assets/banner.svg" alt="yfnhanced-mcp — enterprise-grade Yahoo Finance data for AI agents" width="100%">
+</p>
 
-Production-grade financial data infrastructure for AI assistants with enterprise-grade resilience, comprehensive data quality validation, and production-ready monitoring.
+# yfnhanced-mcp
 
-## Installation
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that gives AI assistants financial data from Yahoo Finance, wrapped in the resilience patterns you would expect from a service: a circuit breaker, adaptive rate limiting, jittered retry, and a stale-while-revalidate cache.
+
+Every response carries a data-quality report, so a model can tell "market closed" apart from "the upstream call quietly returned nothing."
+
+17 tools · 6 prompts · 6 resources · TypeScript · no API key · no database
+
+> Yahoo Finance has no public API and rate-limits aggressively. This server is built to degrade honestly rather than pretend. Read [Data availability](#data-availability) before you build on it.
+
+---
+
+## Install
 
 ```bash
 npm install -g yfnhanced-mcp
 ```
 
-## Quick Start
+### Claude Desktop
 
-### Start Server
-
-```bash
-yfnhanced-mcp
-```
-
-### Claude Desktop Integration
-
-Add to your `claude_desktop_config.json`:
+Add to `claude_desktop_config.json` and restart:
 
 ```json
 {
   "mcpServers": {
     "yfnhanced": {
-      "command": "yfnhanced-mcp"
+      "command": "npx",
+      "args": ["-y", "yfnhanced-mcp"]
     }
   }
 }
 ```
 
-### Other AI Tools
+The same block works for Cursor, Cline, Windsurf, and any other MCP client that launches a stdio server.
 
-**Cursor AI / Cline AI:**
+<details>
+<summary><strong>A note on the two binary names</strong></summary>
 
-```json
-{
-  "mcpServers": {
-    "yfnhanced": {
-      "command": "yfnhanced-mcp"
-    }
-  }
-}
-```
+This published version installs a `y-finance-mcp` command. A matching `yfnhanced-mcp` alias exists in the repository and takes effect from the next publish. Prefer the `npx` form above: `npx` resolves the package's single binary regardless of its name, so it works today and after the next release.
 
-## Features
+</details>
 
-- **13+ Financial Data Tools**: Stocks, crypto, forex, company intelligence, market sentiment
-- **Circuit Breaker Pattern**: Automatic recovery from API failures
-- **Multi-Strategy Rate Limiting**: Token bucket + adaptive + per-endpoint limiting
-- **Data Quality Scoring**: Completeness and integrity validation
-- **Comprehensive Caching**: Graceful fallback with high cache hit ratio (70-90%)
-- **Enterprise Testing**: Unit, integration, e2e, and chaos tests
+---
 
-## Available Tools
+## Tools
 
-### Market Data
-- `get_quote` - Real-time quotes with quality reporting
-- `get_historical_prices` - OHLCV data with date ranges
-- `get_historical_prices_multi` - Batch historical data
+**Quotes and history** — `get_quote` (up to 50 symbols), `get_quote_summary`, `get_historical_prices`, `get_historical_prices_multi`
 
-### Company Intelligence
-- `get_quote_summary` - Comprehensive company overview
-- `get_balance_sheet` - Assets, liabilities, equity
-- `get_income_statement` - Revenue, expenses, net income
-- `get_cash_flow_statement` - Operating, investing, financing cash flows
-- `get_earnings` - Quarterly earnings with estimates
-- `get_analysis` - Analyst recommendations and price targets
-- `get_major_holders` - Institutional and insider ownership
+**Fundamentals** — `get_balance_sheet`, `get_income_statement`, `get_cash_flow_statement`, `get_earnings`, `get_analysis`, `get_major_holders`, `get_summary_profile`
 
-### Market Sentiment
-- `get_news` - Latest articles with relevance scoring
-- `get_options` - Options chains with Greeks
-- `get_trending_symbols` - Top movers with volume metrics
-- `screener` - Filter stocks by 12+ criteria
+**Markets and sentiment** — `get_news`, `get_options` (with Black-Scholes Greeks), `get_trending_symbols`, `screener`, `get_crypto_quote`, `get_forex_quote`
 
-### Cross-Asset
-- `get_crypto_quote` - Cryptocurrency prices
-- `get_forex_quote` - Currency pair exchange rates
+**Prompts** — `analyze_stock`, `compare_stocks`, `financial_health_check`, `earnings_analysis`, `market_overview`, `portfolio_due_diligence`
 
-## Documentation
+**Resources** — `ticker://{symbol}/` then `quote`, `profile`, `financials`, `historical`, `news`, `analysis`
 
-For complete documentation including configuration, usage examples, architecture details, and best practices:
-
-**[View Full Documentation on GitHub](https://github.com/kanishka-namdeo/yfnhanced-mcp)**
-
-Documentation includes:
-- [Complete Tool Reference](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/TOOLS.md)
-- [Usage Guide with Examples](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/USAGE_GUIDE.md)
-- [Configuration Guide](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/CONFIGURATION.md)
-- [Architecture Details](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/ARCHITECTURE.md)
-- [Data Verification Status](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/DATA_VERIFICATION.md)
+---
 
 ## Configuration
 
-Create a `config.json` file:
+Environment variables are the only configuration that takes effect today. Names are `YF_MCP_` plus the upper-cased config path.
 
-```json
-{
-  "rateLimit": {
-    "requestsPerMinute": 60,
-    "requestsPerHour": 1500
-  },
-  "cache": {
-    "ttlQuotes": 60000,
-    "maxCacheSize": 1000
-  },
-  "circuitBreaker": {
-    "failureThreshold": 5,
-    "monitoringWindow": 60000,
-    "successThreshold": 3
-  }
-}
+| Variable | Default |
+|---|---|
+| `YF_MCP_RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` |
+| `YF_MCP_CACHE_TTL_QUOTES` | `60000` |
+| `YF_MCP_CACHE_MAX_CACHE_SIZE` | `1000` |
+| `YF_MCP_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` |
+| `YF_MCP_CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | `3` |
+| `YF_MCP_RETRY_MAX_RETRIES` | `3` |
+| `YF_MCP_RETRY_BASE_DELAY` | `1000` |
+| `YF_MCP_CONFIG_PATH` | `./config.json` |
+
+```bash
+YF_MCP_RATE_LIMIT_REQUESTS_PER_MINUTE=30 npx -y yfnhanced-mcp
 ```
 
-For detailed configuration options, see [Configuration Guide](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/main/docs/CONFIGURATION.md).
+> **Known defect:** `config.json` is parsed and validated, then overwritten by defaults, so file values have no effect. `.yaml` is unsupported. Use environment variables.
 
-## Performance
+---
 
-| Metric | Value |
-|--------|-------|
-| Quote queries | 60 requests/minute (configurable) |
-| Batch operations | Up to 100 symbols per request |
-| Cache hit ratio | 70-90% for frequently accessed symbols |
-| Cold start time | <500ms |
-| Test coverage | 95%+ for core middleware |
+## Data availability
+
+| Area | Status |
+|---|---|
+| Quotes, OHLCV, earnings, analysts, holders, news, options | Real data, subject to rate limits |
+| Financial statements | Works, but validation can reject some symbols |
+| `get_crypto_quote`, `get_forex_quote` | **Registered but stubbed** — hardcoded values, no network call |
+| Batch size | 50 symbols maximum |
+| Transport | stdio only |
+
+---
+
+## Documentation
+
+- [README](https://github.com/kanishka-namdeo/yfnhanced-mcp#readme) — architecture, diagrams, and the full picture
+- [Tools reference](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/master/docs/TOOLS.md)
+- [Usage guide](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/master/docs/USAGE_GUIDE.md)
+- [Configuration](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/master/docs/CONFIGURATION.md)
+- [Architecture](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/master/docs/ARCHITECTURE.md)
+- [Data verification](https://github.com/kanishka-namdeo/yfnhanced-mcp/blob/master/docs/DATA_VERIFICATION.md)
+- [Source](https://github.com/kanishka-namdeo/yfnhanced-mcp) · [Issues](https://github.com/kanishka-namdeo/yfnhanced-mcp/issues)
 
 ## License
 
-MIT
+MIT © [Kanishka Namdeo](https://github.com/kanishka-namdeo)
 
-## Links
-
-- [GitHub Repository](https://github.com/kanishka-namdeo/yfnhanced-mcp)
-- [npm Package](https://www.npmjs.com/package/yfnhanced-mcp)
-- [MCP Protocol](https://modelcontextprotocol.io/)
-- [Report Issues](https://github.com/kanishka-namdeo/yfnhanced-mcp/issues)
+*Not affiliated with, or endorsed by, Yahoo Inc.*

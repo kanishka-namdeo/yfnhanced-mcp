@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="t d">
+  <title id="t">yfnhanced-mcp</title>
+  <desc id="d">Three ascending chart bars inside a violet-to-cyan rounded square, crossed by a rising trend line.</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B5CF6"/>
+      <stop offset="0.55" stop-color="#6D6BF2"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15" fill="url(#brand)"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15" fill="url(#sheen)"/>
+
+  <g fill="#0A0A14" fill-opacity="0.82">
+    <rect x="12" y="36" width="8.5" height="15" rx="2.5"/>
+    <rect x="25" y="28" width="8.5" height="23" rx="2.5"/>
+    <rect x="38" y="19" width="8.5" height="32" rx="2.5"/>
+  </g>
+
+  <path d="M14.5 31.5 L29.25 22 L42.25 13.5" fill="none" stroke="#F5F3FB" stroke-width="3.25"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="50" cy="12" r="4.6" fill="#F5F3FB"/>
+  <path d="M42.25 13.5 L50 12" fill="none" stroke="#F5F3FB" stroke-width="3.25" stroke-linecap="round"/>
+</svg>

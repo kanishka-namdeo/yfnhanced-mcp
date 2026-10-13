@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 940" role="img" aria-labelledby="tt td">
+  <title id="tt">Real session: MCP handshake, 17 tools listed, live get_trending_symbols call</title>
+  <desc id="td">Terminal capture taken 2026-10-13 by running node test-mcp-client.js against dist/index.js. Text is verbatim from the run; the quote endpoint was rate-limited by Yahoo so the trending call is shown instead.</desc>
+  <defs>
+    <linearGradient id="tbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12101F"/>
+      <stop offset="1" stop-color="#0A0A14"/>
+    </linearGradient>
+    <clipPath id="tclip"><rect x="0" y="0" width="1200" height="940" rx="16"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#tclip)">
+    <rect width="1200" height="940" fill="url(#tbg)"/>
+    <rect width="1200" height="44" fill="#1B1630"/>
+    <line x1="0" y1="44" x2="1200" y2="44" stroke="#2E2748"/>
+    <circle cx="26" cy="22" r="6" fill="#FB7185"/>
+    <circle cx="48" cy="22" r="6" fill="#FBBF24"/>
+    <circle cx="70" cy="22" r="6" fill="#34D399"/>
+    <text x="600" y="27" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#6E678A">node test-mcp-client.js — yfnhanced-mcp</text>
+
+    <text x="32" y="78" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14.5" xml:space="preserve">
+      <tspan x="32" fill="#22D3EE">$ </tspan><tspan fill="#F5F3FB">node test-mcp-client.js</tspan>
+      <tspan x="32" dy="34" fill="#6E678A">Starting MCP server...</tspan>
+      <tspan x="32" dy="21" fill="#6E678A">[Server stderr]: Yahoo Finance MCP Server started successfully</tspan>
+      <tspan x="32" dy="21" fill="#6E678A">[Server stderr]: Server state: ready</tspan>
+      <tspan x="32" dy="21" fill="#34D399">✅ MCP Client initialized successfully</tspan>
+
+      <tspan x="32" dy="30" fill="#F5F3FB" font-weight="700">📊 Available Tools (17):</tspan>
+      <tspan x="48" dy="23" fill="#22D3EE">• get_quote</tspan><tspan fill="#6E678A"> — real-time quotes with data quality reporting</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_quote_summary</tspan><tspan fill="#6E678A"> — comprehensive company overview</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_historical_prices</tspan><tspan fill="#6E678A"> — OHLCV with integrity validation</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_historical_prices_multi</tspan><tspan fill="#6E678A"> — batch OHLCV, up to 50 symbols</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_earnings</tspan><tspan fill="#6E678A"> — history, estimates, surprise analysis</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_analysis</tspan><tspan fill="#6E678A"> — recommendations, targets, trends</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_major_holders</tspan><tspan fill="#6E678A"> — institutional, fund, insider</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_news</tspan><tspan fill="#6E678A"> — recent articles with freshness</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_options</tspan><tspan fill="#6E678A"> — chain, strikes, IV, Black-Scholes Greeks</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_balance_sheet</tspan><tspan fill="#6E678A"> — annual / quarterly with field tracking</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_income_statement</tspan><tspan fill="#6E678A"> — revenue, expenses, net income</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_cash_flow_statement</tspan><tspan fill="#6E678A"> — operating, investing, financing</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_summary_profile</tspan><tspan fill="#6E678A"> — sector and industry classification</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_crypto_quote</tspan><tspan fill="#6E678A"> — crypto prices, batch support</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_forex_quote</tspan><tspan fill="#6E678A"> — FX rates with bid/ask spreads</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• get_trending_symbols</tspan><tspan fill="#6E678A"> — trending names with engagement</tspan>
+      <tspan x="48" dy="21" fill="#22D3EE">• screener</tspan><tspan fill="#6E678A"> — filter by criteria with confidence scores</tspan>
+
+      <tspan x="32" dy="30" fill="#F5F3FB" font-weight="700">📁 Available Resources (6):</tspan>
+      <tspan x="48" dy="23" fill="#8B5CF6">• ticker://{symbol}/quote</tspan><tspan fill="#6E678A">  ·  /profile  ·  /financials</tspan>
+      <tspan x="48" dy="21" fill="#8B5CF6">• ticker://{symbol}/historical</tspan><tspan fill="#6E678A">  ·  /news  ·  /analysis</tspan>
+
+      <tspan x="32" dy="30" fill="#F5F3FB" font-weight="700">💡 Available Prompts (6):</tspan>
+      <tspan x="48" dy="23" fill="#8B5CF6">• analyze_stock</tspan><tspan fill="#6E678A">  ·  </tspan><tspan fill="#8B5CF6">compare_stocks</tspan><tspan fill="#6E678A">  ·  </tspan><tspan fill="#8B5CF6">financial_health_check</tspan>
+      <tspan x="48" dy="21" fill="#8B5CF6">• earnings_analysis</tspan><tspan fill="#6E678A">  ·  </tspan><tspan fill="#8B5CF6">market_overview</tspan><tspan fill="#6E678A">  ·  </tspan><tspan fill="#8B5CF6">portfolio_due_diligence</tspan>
+
+      <tspan x="32" dy="32" fill="#F5F3FB" font-weight="700">🔧 Calling tool: get_trending_symbols</tspan>
+      <tspan x="48" dy="24" fill="#6E678A">Arguments: {</tspan><tspan fill="#22D3EE"> "region"</tspan><tspan fill="#A79FC0">: </tspan><tspan fill="#34D399">"US"</tspan><tspan fill="#6E678A"> }</tspan>
+      <tspan x="32" dy="25" fill="#34D399">✅ Tool result:</tspan>
+      <tspan x="48" dy="23" fill="#A79FC0">{</tspan>
+      <tspan x="64" dy="21" fill="#22D3EE">"trending"</tspan><tspan fill="#A79FC0">: { </tspan><tspan fill="#22D3EE">"count"</tspan><tspan fill="#A79FC0">: </tspan><tspan fill="#FBBF24">5</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#22D3EE">"quotes"</tspan><tspan fill="#A79FC0">: [ </tspan><tspan fill="#34D399">"SKHY"</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#34D399">"BMBL"</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#34D399">"MU"</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#34D399">"SNDK"</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#34D399">"CBRS"</tspan><tspan fill="#A79FC0"> ] }</tspan>
+      <tspan x="64" dy="21" fill="#22D3EE">"meta"</tspan><tspan fill="#A79FC0">: { </tspan><tspan fill="#22D3EE">"fromCache"</tspan><tspan fill="#A79FC0">: </tspan><tspan fill="#FBBF24">false</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#22D3EE">"dataAge"</tspan><tspan fill="#A79FC0">: </tspan><tspan fill="#FBBF24">255</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#22D3EE">"completenessScore"</tspan><tspan fill="#A79FC0">: </tspan><tspan fill="#FBBF24">50</tspan><tspan fill="#A79FC0">, </tspan><tspan fill="#22D3EE">"warnings"</tspan><tspan fill="#A79FC0">: [] }</tspan>
+      <tspan x="48" dy="21" fill="#A79FC0">}</tspan>
+    </text>
+
+    <line x1="24" y1="884" x2="1176" y2="884" stroke="#2E2748"/>
+    <text x="32" y="912" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12.5" fill="#6E678A">Captured 2026-10-13 against dist/index.js. Verbatim tool names and live trending values; descriptions abbreviated. Raw log: assets/terminal/raw-session.txt</text>
+  </g>
+</svg>

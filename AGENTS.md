@@ -83,12 +83,14 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Project-Wide Contracts
 
-- Package: `yfnhanced-mcp` v1.0.0, ESM (`"type": "module"`), Node >= 18, entry `dist/index.js`, bin `y-finance-mcp`. Runtime deps are only `@modelcontextprotocol/sdk`, `yahoo-finance2`, `zod`, `winston`.
-- Verification gate for any source change: `npm run lint`, `npm run typecheck`, `npm run build`, `npm test` (see `AGENTS.md` under `.github/` for what CI actually runs, and the build-ordering defect there).
-- Root-owned surface with no child doc: `package.json` scripts, `tsconfig.json`, `eslint.config.mjs`, `babel.config.js` (dead), `jest.config.js`, `Dockerfile`, `docker-compose.yml`, `.gitignore`, `.npmignore`, the `README*.md` variants, and the two frozen `*_REPORT.md` snapshots.
-- `README.md` is a generated swap target: `npm run readme:npm` copies `README.npm.md` over it, `npm run readme:github` copies `README.github.md` over it. Never hand-edit `README.md`; edit the variant. Both scripts use the Windows `copy` command and fail on Linux runners.
+- Package: `yfnhanced-mcp` v1.0.0, ESM (`"type": "module"`), Node >= 18, entry `dist/index.js`, bins `y-finance-mcp` and `yfnhanced-mcp`. Runtime deps are only `@modelcontextprotocol/sdk`, `yahoo-finance2`, `zod`, `winston`. Note the repo is at 1.0.0 while npm already serves 1.0.1, so a publish requires a version bump first.
+- Verification gate for any source change: `npm run lint`, `npm run typecheck`, `npm run build`, `npm test`. Measured 2026-10-13: `typecheck` and `build` are clean, `npm run lint` fails with roughly 790 errors concentrated in `src/`, and `npm test` fails 45 of 52 suites. The gate is aspirational, not enforced — check the baseline before blaming your change for a red run.
+- 17 tools, 6 prompts, and 6 resource templates are registered by `src/index.ts`. The count appears in `README.github.md`, `README.npm.md`, `assets/banner.svg`, and `assets/terminal/demo.svg`; a registration change must update all four.
+- Root-owned surface with no child doc: `package.json` scripts, `tsconfig.json`, `eslint.config.mjs`, `babel.config.js` (dead), `jest.config.js`, `Dockerfile`, `docker-compose.yml`, `.gitignore`, `.npmignore`, `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, the `README*.md` variants, and the two frozen `*_REPORT.md` snapshots.
+- `README.md` is a generated swap target: `npm run readme:npm` copies `README.npm.md` over it, `npm run readme:github` copies `README.github.md` over it. Never hand-edit `README.md`; edit the variant. Both scripts shell out to `node -e` with `fs.copyFileSync`, so they run on any platform.
 - `COMPREHENSIVE_TEST_REPORT.md` and `TEST_REPORT.md` are frozen snapshots dated 2026-01-18. They are not a verification source and their counts do not match the current suite; do not cite them as test status.
-- No `LICENSE` file exists although `package.json` `files` lists it and `README.md` asserts MIT. `package.json` `author` is still the placeholder `Your Name <your.email@example.com>`.
+- `LICENSE` is MIT, `Copyright (c) 2026 Kanishka Namdeo`, matching `package.json` `license` and `author`. The author field deliberately carries no email; do not add one.
+- `assets/` holds every human-facing image and `scripts/` holds the Node ESM utilities that rasterize and check them. Neither ships to npm, because `package.json` `files` is a `dist`/`README.md`/`LICENSE` whitelist.
 - `docs/` and every `*.md` except `README.md` are excluded from the npm package by `.npmignore`; `dist/` is gitignored.
 
 ## Child DOX Index
@@ -108,5 +110,6 @@ Root owns the rail, packaging surface, and repo-wide gates. Children own their s
 - `tests/e2e/AGENTS.md` — spawned-server end-to-end tests and their build dependency.
 - `tests/chaos/AGENTS.md` — failure-injection tests and the process-boundary limits of their mocks.
 - `.github/AGENTS.md` — CI and release workflows, job gates, and runner portability defects.
+- `assets/AGENTS.md` — the visual identity system: palette, type stacks, geometry, size budgets, the SVG-vs-mermaid split, and ownership of `scripts/`.
 
-Folders with no child doc are owned by the nearest parent above them: `src/prompts/` is orphaned (see `src/AGENTS.md`), and `tests/unit`, `tests/integration`, `tests/fixtures` are governed by `tests/AGENTS.md`.
+Folders with no child doc are owned by the nearest parent above them: `scripts/` is governed by `assets/AGENTS.md`, and `tests/unit`, `tests/integration`, `tests/fixtures` are governed by `tests/AGENTS.md`. `src/prompts/` was deleted on 2026-10-13 — its 988-line module was never wired into the server, and the six live prompts are inline in `src/index.ts`.

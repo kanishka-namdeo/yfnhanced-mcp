@@ -16,36 +16,30 @@ Deep dive into the Yahoo Finance MCP Server's architecture, resilience patterns,
 
 The Yahoo Finance MCP Server is built with a layered architecture designed for production-grade resilience and data quality:
 
+```mermaid
+---
+title: System layers
+---
+flowchart TB
+  client["MCP clients<br/>Claude Desktop · Cursor · Cline · custom SDK"]
+  stdio["stdio transport<br/>newline-delimited JSON-RPC 2.0"]
+  sec["SecurityMiddleware<br/>input validation · output and error sanitization"]
+  reg["MCPServer registry<br/>17 tools · 6 resources · 6 prompts"]
+  pre["Cache pre-check<br/>LRU · stale-while-revalidate"]
+  cb["CircuitBreaker"]
+  rl["RateLimiter"]
+  rp["RetryPolicy"]
+  lib["yahoo-finance2"]
+  yh["Yahoo Finance<br/>unofficial endpoints"]
+
+  client --> stdio --> sec --> reg --> pre
+  pre -->|hit| reg
+  pre -->|miss or stale| cb
+  cb --> rl --> rp --> lib --> yh
+  yh -.->|value plus meta quality report| reg
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   MCP Client Layer                      │
-│  (Claude Desktop, Custom AI Applications)              │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│                   Tool Layer                             │
-│  (13+ MCP tools for market data, financials, etc.)       │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│                 Resilience Layer                         │
-│  Rate Limiter → Circuit Breaker → Retry Logic → Cache      │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│                Data Quality Engine                        │
-│  Completeness Scoring → Integrity Validation → Reporting     │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│               Yahoo Finance API Client                     │
-│  HTTP client with authentication and error handling         │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────────┐
-│              Yahoo Finance API (External)                  │
-└─────────────────────────────────────────────────────────────┘
-```
+
+The order inside the resilience stack is the one the code actually nests — `CircuitBreaker` outermost, then `RateLimiter`, then `RetryPolicy` — composed by hand at [`src/services/yahoo-finance.ts`](../src/services/yahoo-finance.ts). There is no chain abstraction: `MiddlewareChain` is declared in [`src/types/middleware.ts`](../src/types/middleware.ts) and never implemented.
 
 ---
 
@@ -55,12 +49,68 @@ The resilience layer handles real-world API unreliability through multiple strat
 
 ### Request Flow
 
+A cache hit never touches the network stack. On a miss the four layers nest in this order, and `cache.set` runs innermost so every successful attempt writes:
+
+```mermaid
+---
+title: Data call lifecycle
+---
+sequenceDiagram
+  participant T as Tool handler
+  participant S as YahooFinanceClient
+  participant C as Cache
+  participant B as CircuitBreaker
+  participant R as RateLimiter
+  participant P as RetryPolicy
+  participant Y as yahoo-finance2
+
+  T->>S: getQuote(symbol)
+  S->>C: pre-check key
+  alt entry present and fresh
+    C-->>S: cached value
+    S-->>T: value with fromCache true
+  else miss or stale
+    S->>B: execute
+    B->>R: execute
+    R->>P: execute
+    P->>Y: network call
+    Y-->>C: cache.set on success
+    Y-->>P: result or error
+    P-->>R: retried result after backoff
+    R-->>B: outcome recorded
+    B-->>S: value
+    S-->>T: value plus meta
+  end
 ```
-Request → Rate Limiter → Circuit Breaker → Retry Logic → Cache Layer → API
-    ↓              ↓                  ↓              ↓            ↓
-  Throttle       Check State        Backoff       Check Cache   Fetch
-  Queue          Fail Fast          Jitter        Return Data   Data
+
+### Circuit breaker states
+
+```mermaid
+---
+title: Circuit breaker state machine
+---
+stateDiagram-v2
+  CLOSED --> OPEN: failureCount reaches failureThreshold inside monitoringWindowMs
+  OPEN --> HALF_OPEN: resetTimeoutMs elapsed, evaluated lazily on the next execute or getState call
+  HALF_OPEN --> CLOSED: successCount reaches successThreshold
+  HALF_OPEN --> OPEN: any single failure
+  CLOSED --> CLOSED: success prunes the rolling window
 ```
+
+The OPEN to HALF_OPEN edge has no timer behind it; the transition is decided when a call arrives. `CircuitBreakerOpenError` carries `isRetryable = false`, so an open breaker exits the retry loop immediately instead of burning attempts.
+
+### Startup ordering
+
+```mermaid
+---
+title: MCPServer initialize
+---
+flowchart LR
+  a["loadConfig"] --> b["initializeServices"] --> c["initializeServer"] --> d["registerTools"] --> e["registerResources"] --> f["registerPrompts"] --> g["setupErrorHandling"] --> h["setupGracefulShutdown"] --> i["state = ready"]
+  a -.->|any throw| x["state = stopped then rethrow"]
+```
+
+`state` gates every request path, so handlers registered after the ready flag would be unreachable and any earlier one leaves a half-initialized server answering requests.
 
 ### Rate Limiter
 

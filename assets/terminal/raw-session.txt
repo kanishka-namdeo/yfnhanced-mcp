@@ -1,0 +1,225 @@
+Starting MCP server...
+Failed to parse message: SyntaxError: Unexpected token 'P', "Please con"... is not valid JSON
+    at JSON.parse (<anonymous>)
+    at MCPTestClient.handleMessage (file:///D:/test_mcp/yfnhanced-mcp/test-mcp-client.js:223:30)
+    at Socket.<anonymous> (file:///D:/test_mcp/yfnhanced-mcp/test-mcp-client.js:26:12)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:559:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:510:3)
+    at Readable.push (node:internal/streams/readable:390:5)
+    at Pipe.onStreamRead (node:internal/stream_base_commons:189:23) Line: Please consider completing the survey at https://bit.ly/yahoo-finance-api-feedback if you haven't already; for more info see https://github.com/gadicc/yahoo-finance2/issues/764#issuecomment-2056623851.  This will only be shown once, but you can suppress this message in future with `new YahooFinance({ suppressNotices: ['yahooSurvey'] })`.
+[Server stderr]: Yahoo Finance MCP Server started successfully
+[Server stderr]: Server state: ready
+Press Ctrl+C to stop the server
+✅ MCP Client initialized successfully
+
+📊 Available Tools (17):
+  • get_quote: Fetch real-time stock quotes with data quality reporting and...
+  • get_quote_summary: Get comprehensive quote summary with data quality analysis a...
+  • get_earnings: Fetch earnings data including historical earnings, estimates...
+  • get_analysis: Fetch analyst recommendations, target prices, and trend anal...
+  • get_major_holders: Retrieve major holders information including institutional o...
+  • get_news: Fetch latest news articles for a stock symbol with relevance...
+  • get_options: Fetch options chain data with Greeks calculations and expira...
+  • get_balance_sheet: Fetch balance sheet data for a company....
+  • get_income_statement: Fetch income statement data for a company....
+  • get_cash_flow_statement: Fetch cash flow statement data for a company....
+  • get_summary_profile: Get company profile information including sector, industry, ...
+  • get_crypto_quote: Get real-time cryptocurrency quotes with exchange informatio...
+  • get_forex_quote: Get currency pair exchange rates with bid/ask spreads. Suppo...
+  • get_trending_symbols: Get trending stocks with volume indicators and engagement me...
+  • screener: Screen stocks based on filters with validation and confidenc...
+  • get_historical_prices: Get historical price data for a stock symbol...
+  • get_historical_prices_multi: Get historical price data for multiple stock symbols...
+
+📁 Available Resources (6):
+  • ticker://{symbol}/quote: [symbol]/quote
+  • ticker://{symbol}/profile: [symbol]/profile
+  • ticker://{symbol}/financials: [symbol]/financials
+  • ticker://{symbol}/historical: [symbol]/historical
+  • ticker://{symbol}/news: [symbol]/news
+  • ticker://{symbol}/analysis: [symbol]/analysis
+
+💡 Available Prompts (6):
+  • analyze_stock: Perform comprehensive stock analysis including financials, e...
+  • compare_stocks: Compare multiple stocks across key metrics...
+  • financial_health_check: Assess financial health of a company using key ratios...
+  • earnings_analysis: Analyze earnings history and trends...
+  • market_overview: Get market overview with trending stocks and indices...
+  • portfolio_due_diligence: Perform due diligence on a portfolio of stocks...
+
+🧪 Testing tools...
+
+
+🔧 Calling tool: get_quote
+   Arguments: {
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "GOOGL"
+  ]
+}
+✅ Tool result: {
+  "results": {
+    "AAPL": {
+      "data": {
+        "regularMarketPrice": null,
+        "regularMarketChange": null,
+        "regularMarketChangePercent": null,
+        "regularMarketPreviousClose": null,
+        "regularMarketOpen": null,
+        "regularMarketDayRange": null,
+        "fiftyTwoWeekRange": null,
+        "regularMarketVolume": null,
+        "averageVolume": null,
+        "averageVolume10days": null,
+        "marketCap": null,
+        "trailingPE": null,
+        "forwardPE": null,
+        "trailingEPS": null,
+        "forwardEPS": null,
+        "dividendRate": null,
+        "dividendYield": null,
+        "exDividendDate": null,
+        "beta": null,
+        "sharesOutstanding": null,
+        "averageTrueRange": null
+      },
+      "meta": {
+        "fromCache": false,
+        "dataAge": 0,
+        "completenessScore": 0,
+        "warnings": [
+          "Low data completeness (50%)"
+        ]
+      }
+    },
+    "MSFT": {
+      "data": {
+        "regularMarketPrice": null,
+        "regularMarketChange": null,
+        "regularMarketChangePercent": null,
+        "regularMarketPreviousClose": null,
+        "regularMarketOpen": null,
+        "regularMarketDayRange": null,
+        "fiftyTwoWeekRange": null,
+        "regularMarketVolume": null,
+        "averageVolume": null,
+        "averageVolume10days": null,
+        "marketCap": null,
+        "trailingPE": null,
+        "forwardPE": null,
+        "trailingEPS": null,
+        "forwardEPS": null,
+        "dividendRate": null,
+        "dividendYield": null,
+        "exDividendDate": null,
+        "beta": null,
+        "sharesOutstanding": null,
+        "averageTrueRange": null
+      },
+      "meta": {
+        "fromCache": false,
+        "dataAge": 0,
+        "completenessScore": 0,
+        "warnings": [
+          "Low data completeness (50%)"
+        ]
+      }
+    },
+    "GOOGL": {
+      "data": {
+        "regularMarketPrice": null,
+        "regularMarketChange": null,
+        "regularMarketChangePercent": null,
+        "regularMarketPreviousClose": null,
+        "regularMarketOpen": null,
+        "regularMarketDayRange": null,
+        "fiftyTwoWeekRange": null,
+        "regularMarketVolume": null,
+        "averageVolume": null,
+        "averageVolume10days": null,
+        "marketCap": null,
+        "trailingPE": null,
+        "forwardPE": null,
+        "trailingEPS": null,
+        "forwardEPS": null,
+        "dividendRate": null,
+        "dividendYield": null,
+        "exDividendDate": null,
+        "beta": null,
+        "sharesOutstanding": null,
+        "averageTrueRange": null
+      },
+      "meta": {
+        "fromCache": false,
+        "dataAge": 0,
+        "completenessScore": 0,
+        "warnings": [
+          "Low data completeness (50%)"
+        ]
+      }
+    }
+  },
+  "summary": {
+    "totalRequested": 3,
+    "totalReturned": 3,
+    "fromCache": 0,
+    "rateLimited": false,
+    "errors": []
+  }
+}
+
+🔧 Calling tool: get_earnings
+   Arguments: {
+  "symbol": "AAPL",
+  "limit": 4
+}
+✅ Tool result: {
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"symbol\": \"AAPL\",\n  \"earnings\": {\n    \"earningsDate\": null,\n    \"currentQuarterEstimate\": null,\n    \"currentQuarterEstimateDate\": null,\n    \"currentQuarterEstimateYearAgo\": null,\n    \"quarterly\": [],\n    \"trends\": []\n  },\n  \"meta\": {\n    \"fromCache\": false,\n    \"dataAge\": 0,\n    \"completenessScore\": 0,\n    \"warnings\": [\n      \"Low data completeness (<50%)\",\n      \"Earnings date not available\",\n      \"Current quarter estimate not available\",\n      \"No historical earnings data available\",\n      \"Earnings trend data not available\"\n    ]\n  }\n}"
+    }
+  ]
+}
+
+🔧 Calling tool: get_trending_symbols
+   Arguments: {
+  "region": "US"
+}
+✅ Tool result: {
+  "trending": {
+    "count": 5,
+    "quotes": [
+      {
+        "symbol": "SKHY"
+      },
+      {
+        "symbol": "BMBL"
+      },
+      {
+        "symbol": "MU"
+      },
+      {
+        "symbol": "SNDK"
+      },
+      {
+        "symbol": "CBRS"
+      }
+    ],
+    "jobTimestamp": 1791879108395,
+    "startInterval": 202610130700
+  },
+  "meta": {
+    "fromCache": false,
+    "dataAge": 255,
+    "completenessScore": 50,
+    "warnings": []
+  }
+}
+
+✅ All tests completed!
+
+👋 Disconnecting...
+Server process exited with code null

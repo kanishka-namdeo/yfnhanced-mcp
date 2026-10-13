@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" role="img" aria-labelledby="at ad">
+  <title id="at">yfnhanced-mcp request path</title>
+  <desc id="ad">Layered architecture: MCP clients over stdio JSON-RPC, the security boundary at the server, the tool registry, the resilience stack composed inside the Yahoo Finance client, and the upstream endpoints.</desc>
+  <defs>
+    <linearGradient id="abg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A0A14"/>
+      <stop offset="0.5" stop-color="#12101F"/>
+      <stop offset="1" stop-color="#151027"/>
+    </linearGradient>
+    <linearGradient id="brandline" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <pattern id="agrid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.25" fill="#2E2748" fill-opacity="0.5"/>
+    </pattern>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 1 L9 5 L0 9 z" fill="#6E678A"/>
+    </marker>
+    <marker id="arrC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 1 L9 5 L0 9 z" fill="#22D3EE"/>
+    </marker>
+    <clipPath id="aclip"><rect x="0" y="0" width="1280" height="800" rx="24"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#aclip)">
+    <rect width="1280" height="800" fill="url(#abg)"/>
+    <rect width="1280" height="800" fill="url(#agrid)"/>
+
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+      <text x="48" y="58" font-size="25" font-weight="700" fill="#F5F3FB">Request path</text>
+      <rect x="48" y="68" width="132" height="4" rx="2" fill="url(#brandline)"/>
+      <text x="48" y="94" font-size="14.5" fill="#A79FC0">Every layer below is hand-wired at its call site — there is no chain abstraction in this codebase.</text>
+
+      <!-- band 1: clients -->
+      <rect x="48" y="116" width="1184" height="58" rx="14" fill="#1B1630" stroke="#2E2748"/>
+      <text x="72" y="151" font-size="15" font-weight="600" fill="#F5F3FB">MCP clients</text>
+      <g font-size="13.5" fill="#A79FC0">
+        <rect x="240" y="130" width="150" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="264" y="150">Claude Desktop</text>
+        <rect x="402" y="130" width="110" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="426" y="150">Cursor</text>
+        <rect x="524" y="130" width="100" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="548" y="150">Cline</text>
+        <rect x="636" y="130" width="140" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="660" y="150">Custom SDK</text>
+      </g>
+      <text x="1208" y="151" text-anchor="end" font-size="13" fill="#6E678A">tools · resources · prompts</text>
+
+      <line x1="640" y1="174" x2="640" y2="196" stroke="#6E678A" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- band 2: transport -->
+      <rect x="48" y="200" width="1184" height="46" rx="14" fill="#12101F" stroke="#2E2748"/>
+      <text x="72" y="228" font-size="14" fill="#F5F3FB">stdio transport</text>
+      <text x="240" y="228" font-size="13.5" fill="#6E678A">newline-delimited JSON-RPC 2.0 — hardcoded at src/index.ts:207, the only transport this server opens</text>
+
+      <line x1="640" y1="246" x2="640" y2="268" stroke="#6E678A" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- band 3: security -->
+      <rect x="48" y="272" width="1184" height="58" rx="14" fill="#1B1630" stroke="#8B5CF6" stroke-opacity="0.45"/>
+      <text x="72" y="298" font-size="15" font-weight="600" fill="#8B5CF6">SecurityMiddleware</text>
+      <text x="72" y="318" font-size="12.5" fill="#6E678A">src/middleware/security.ts — MCP boundary only</text>
+      <g font-size="13.5" fill="#A79FC0">
+        <rect x="330" y="286" width="168" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="352" y="306">input validation</text>
+        <rect x="510" y="286" width="176" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="532" y="306">output sanitization</text>
+        <rect x="698" y="286" width="166" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="720" y="306">error sanitization</text>
+        <rect x="876" y="286" width="290" height="30" rx="15" fill="#151027" stroke="#2E2748"/><text x="898" y="306">auto-block after 5 suspicious hits</text>
+      </g>
+
+      <line x1="640" y1="330" x2="640" y2="352" stroke="#6E678A" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- band 4: server registry -->
+      <rect x="48" y="356" width="1184" height="86" rx="14" fill="#1B1630" stroke="#2E2748"/>
+      <text x="72" y="384" font-size="15" font-weight="600" fill="#F5F3FB">MCPServer</text>
+      <text x="72" y="404" font-size="12.5" fill="#6E678A">src/index.ts</text>
+      <text x="72" y="424" font-size="12.5" fill="#6E678A">state gate: ready</text>
+      <g font-size="13.5">
+        <rect x="330" y="378" width="270" height="44" rx="10" fill="#151027" stroke="#22D3EE" stroke-opacity="0.4"/>
+        <text x="352" y="398" fill="#22D3EE" font-weight="600">17 tool handlers</text>
+        <text x="352" y="414" font-size="11.5" fill="#6E678A">dispatch map + ListTools defs</text>
+        <rect x="616" y="378" width="270" height="44" rx="10" fill="#151027" stroke="#8B5CF6" stroke-opacity="0.4"/>
+        <text x="638" y="398" fill="#8B5CF6" font-weight="600">6 resource templates</text>
+        <text x="638" y="414" font-size="11.5" fill="#6E678A">ticker://{symbol}/…</text>
+        <rect x="902" y="378" width="264" height="44" rx="10" fill="#151027" stroke="#8B5CF6" stroke-opacity="0.4"/>
+        <text x="924" y="398" fill="#8B5CF6" font-weight="600">6 prompt handlers</text>
+        <text x="924" y="414" font-size="11.5" fill="#6E678A">analyze · compare · diligence</text>
+      </g>
+
+      <line x1="640" y1="442" x2="640" y2="464" stroke="#6E678A" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- band 5: resilience container -->
+      <rect x="48" y="468" width="1184" height="196" rx="14" fill="#12101F" stroke="#22D3EE" stroke-opacity="0.35"/>
+      <text x="72" y="496" font-size="15" font-weight="600" fill="#22D3EE">YahooFinanceClient — resilience composition</text>
+      <text x="1208" y="496" text-anchor="end" font-size="12.5" fill="#6E678A">nesting order taken from src/services/yahoo-finance.ts:571-585</text>
+
+      <g font-size="13.5">
+        <rect x="72" y="516" width="196" height="60" rx="10" fill="#1B1630" stroke="#34D399" stroke-opacity="0.5"/>
+        <text x="92" y="540" fill="#34D399" font-weight="600">Cache pre-check</text>
+        <text x="92" y="558" font-size="11.5" fill="#A79FC0">LRU · stale-while-revalidate</text>
+
+        <rect x="296" y="516" width="196" height="60" rx="10" fill="#1B1630" stroke="#FB7185" stroke-opacity="0.5"/>
+        <text x="316" y="540" fill="#FB7185" font-weight="600">CircuitBreaker</text>
+        <text x="316" y="558" font-size="11.5" fill="#A79FC0">CLOSED · OPEN · HALF_OPEN</text>
+
+        <rect x="520" y="516" width="196" height="60" rx="10" fill="#1B1630" stroke="#FBBF24" stroke-opacity="0.5"/>
+        <text x="540" y="540" fill="#FBBF24" font-weight="600">RateLimiter</text>
+        <text x="540" y="558" font-size="11.5" fill="#A79FC0">token bucket · adaptive</text>
+
+        <rect x="744" y="516" width="196" height="60" rx="10" fill="#1B1630" stroke="#8B5CF6" stroke-opacity="0.5"/>
+        <text x="764" y="540" fill="#8B5CF6" font-weight="600">RetryPolicy</text>
+        <text x="764" y="558" font-size="11.5" fill="#A79FC0">exp backoff · ±25% jitter</text>
+
+        <rect x="968" y="516" width="198" height="60" rx="10" fill="#1B1630" stroke="#2E2748"/>
+        <text x="988" y="540" fill="#F5F3FB" font-weight="600">yahoo-finance2</text>
+        <text x="988" y="558" font-size="11.5" fill="#A79FC0">v3.11 · the only network call</text>
+
+        <line x1="268" y1="546" x2="294" y2="546" stroke="#22D3EE" stroke-width="1.5" marker-end="url(#arrC)"/>
+        <line x1="492" y1="546" x2="518" y2="546" stroke="#22D3EE" stroke-width="1.5" marker-end="url(#arrC)"/>
+        <line x1="716" y1="546" x2="742" y2="546" stroke="#22D3EE" stroke-width="1.5" marker-end="url(#arrC)"/>
+        <line x1="940" y1="546" x2="966" y2="546" stroke="#22D3EE" stroke-width="1.5" marker-end="url(#arrC)"/>
+      </g>
+
+      <g font-size="12.5" fill="#A79FC0">
+        <text x="72" y="606">· cache hit short-circuits before any of the four layers run; <tspan fill="#6E678A">cache.set sits innermost, so every successful attempt writes</tspan></text>
+        <text x="72" y="628">· HTTP 429 inside execute first serves a cached <tspan fill="#22D3EE">rate_limited_&lt;key&gt;</tspan> value before throwing <tspan fill="#FBBF24">RateLimitError</tspan></text>
+        <text x="72" y="650">· <tspan fill="#FB7185">CircuitBreakerOpenError</tspan> is marked non-retryable, so it exits the retry loop immediately</text>
+      </g>
+
+      <line x1="640" y1="664" x2="640" y2="686" stroke="#6E678A" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- band 6: upstream -->
+      <rect x="48" y="690" width="1184" height="52" rx="14" fill="#1B1630" stroke="#2E2748"/>
+      <text x="72" y="722" font-size="14.5" font-weight="600" fill="#F5F3FB">Yahoo Finance</text>
+      <text x="240" y="722" font-size="13" fill="#6E678A">query1 / query2 — quote · chart · quoteSummary · trendingSymbols · screener · search</text>
+      <text x="1208" y="722" text-anchor="end" font-size="13" fill="#6E678A">unofficial, unauthenticated</text>
+
+      <text x="48" y="776" font-size="12" fill="#6E678A">Data quality reporting (completeness · integrity flags · warnings) wraps results on the way back out; diagnostics go to console.error because stdout is the protocol channel.</text>
+    </g>
+  </g>
+</svg>
