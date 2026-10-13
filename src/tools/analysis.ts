@@ -117,21 +117,14 @@ export class AnalysisTools {
     if (cached && (now - cached.timestamp) < ANALYSIS_CACHE_TTL_MS) {
       const dataAge = now - cached.timestamp;
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              symbol,
-              analysis: cached.data.analysis,
-              meta: {
-                fromCache: true,
-                dataAge,
-                completenessScore: cached.data.meta.completenessScore,
-                warnings: [...cached.data.meta.warnings, 'Data from cache']
-              }
-            }, null, 2)
-          }
-        ]
+        symbol,
+        analysis: cached.data.analysis,
+        meta: {
+          fromCache: true,
+          dataAge,
+          completenessScore: cached.data.meta.completenessScore,
+          warnings: [...cached.data.meta.warnings, 'Data from cache']
+        }
       };
     }
 
@@ -158,33 +151,19 @@ export class AnalysisTools {
         timestamp: now
       });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(output, null, 2)
-          }
-        ]
-      };
+      return output;
     } catch (error) {
       if (cached) {
         const dataAge = now - cached.timestamp;
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                symbol,
-                analysis: cached.data.analysis,
-                meta: {
-                  fromCache: true,
-                  dataAge,
-                  completenessScore: cached.data.meta.completenessScore,
-                  warnings: [...cached.data.meta.warnings, 'Using stale cached data due to fetch failure']
-                }
-              }, null, 2)
-            }
-          ]
+          symbol,
+          analysis: cached.data.analysis,
+          meta: {
+            fromCache: true,
+            dataAge,
+            completenessScore: cached.data.meta.completenessScore,
+            warnings: [...cached.data.meta.warnings, 'Using stale cached data due to fetch failure']
+          }
         };
       }
       throw error;

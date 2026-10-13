@@ -40,7 +40,7 @@ class HoldersToolCache {
 function extractNumber(value: unknown): number | null {
   if (typeof value === 'number') {return value;}
   if (typeof value === 'object' && value !== null && 'raw' in value) {
-    const raw = (value as { raw: unknown }).raw;
+    const raw = (value).raw;
     return typeof raw === 'number' ? raw : null;
   }
   return null;
@@ -48,18 +48,20 @@ function extractNumber(value: unknown): number | null {
 
 function extractString(value: unknown): string | null {
   if (typeof value === 'string') {return value;}
+  // v4 hands back Date objects for reportDate/lastReported rather than strings.
+  if (value instanceof Date) {return value.toISOString();}
   if (typeof value === 'object' && value !== null && 'fmt' in value) {
-    return String((value as { fmt: unknown }).fmt);
+    return String((value).fmt);
   }
   return null;
 }
 
 function convertInstitutionalHolder(item: Record<string, unknown>): InstitutionalHolder {
   return {
-    holderName: extractString(item.holderName) || '',
+    holderName: extractString(item.holderName) || extractString(item.organization) || '',
     holderType: extractString(item.holderType) || 'institution',
     lastReported: {
-      fmt: extractString(item.lastReported) || '',
+      fmt: extractString(item.lastReported) || extractString(item.reportDate) || '',
       raw: extractNumber(item.lastReported) || 0
     },
     position: {
@@ -79,9 +81,9 @@ function convertInstitutionalHolder(item: Record<string, unknown>): Institutiona
 
 function convertFundHolder(item: Record<string, unknown>): FundHolder {
   return {
-    holderName: extractString(item.holderName) || '',
+    holderName: extractString(item.holderName) || extractString(item.organization) || '',
     lastReported: {
-      fmt: extractString(item.lastReported) || '',
+      fmt: extractString(item.lastReported) || extractString(item.reportDate) || '',
       raw: extractNumber(item.lastReported) || 0
     },
     position: {
@@ -101,11 +103,11 @@ function convertFundHolder(item: Record<string, unknown>): FundHolder {
 
 function convertDirectHolder(item: Record<string, unknown>): Holder {
   return {
-    holderName: extractString(item.holderName) || '',
+    holderName: extractString(item.holderName) || extractString(item.organization) || extractString(item.name) || '',
     holderType: (extractString(item.holderType) as 'company' | 'individual' | 'institution') || 'individual',
-    relation: (extractString(item.relation) as 'direct' | 'indirect') || 'direct',
+    relation: 'direct',
     lastReported: {
-      fmt: extractString(item.lastReported) || '',
+      fmt: extractString(item.lastReported) || extractString(item.dateReported) || '',
       raw: extractNumber(item.lastReported) || 0
     },
     positionDirect: {
@@ -132,30 +134,35 @@ function convertDirectHolder(item: Record<string, unknown>): Holder {
 }
 
 function convertInsiderHolder(item: Record<string, unknown>): InsiderHolder['holders'][number] {
-  const relation = item.relation as Record<string, unknown> | undefined;
-  const latestTransaction = relation?.latestTransaction as Record<string, unknown> | undefined;
-  const transaction = relation?.transaction as Array<Record<string, unknown>> | undefined;
+  // v4 reports insider rows flat: relation is a job title string, and the dates are
+  // Date objects, not the nested relation.latestTransaction structure the module used to send.
+  const asEpochSeconds = (value: unknown): number => {
+    if (value instanceof Date) {return Math.floor(value.getTime() / 1000);}
+    return extractNumber(value) || 0;
+  };
+
+  const transactionDate = asEpochSeconds(item.latestTransDate) || asEpochSeconds(item.positionDirectDate);
 
   return {
-    name: extractString(item.name) || '',
+    name: extractString(item.name) || extractString(item.holderName) || '',
     relation: {
       latestTransaction: {
-        maxAge: extractNumber(latestTransaction?.maxAge) || 0,
-        shares: extractNumber(latestTransaction?.shares) || 0,
-        filerUrl: extractString(latestTransaction?.filerUrl) || '',
-        transactionDate: extractNumber(latestTransaction?.transactionDate) || 0,
-        positionDirect: extractNumber(latestTransaction?.positionDirect) || 0,
-        positionIndirect: extractNumber(latestTransaction?.positionIndirect) || 0,
-        title: extractString(latestTransaction?.title) || ''
+        maxAge: extractNumber(item.maxAge) || 0,
+        shares: extractNumber(item.positionDirect) || 0,
+        filerUrl: extractString(item.filerUrl) || '',
+        transactionDate,
+        positionDirect: extractNumber(item.positionDirect) || 0,
+        positionIndirect: extractNumber(item.positionIndirect) || 0,
+        title: extractString(item.relation) || extractString(item.title) || ''
       },
-      transaction: transaction?.map((tx) => ({
-        shares: extractNumber(tx.shares) || 0,
-        filerUrl: extractString(tx.filerUrl) || '',
-        transactionDate: extractNumber(tx.transactionDate) || 0,
-        positionDirect: extractNumber(tx.positionDirect) || 0,
-        positionIndirect: extractNumber(tx.positionIndirect) || 0,
-        title: extractString(tx.title) || ''
-      })) || []
+      transaction: [{
+        shares: extractNumber(item.positionDirect) || 0,
+        filerUrl: extractString(item.filerUrl) || '',
+        transactionDate,
+        positionDirect: extractNumber(item.positionDirect) || 0,
+        positionIndirect: extractNumber(item.positionIndirect) || 0,
+        title: extractString(item.relation) || ''
+      }]
     }
   };
 }
@@ -262,8 +269,9 @@ async function fetchInstitutionalHolders(symbol: string): Promise<{
     }
 
     const io = result.institutionOwnership as unknown;
-    if (typeof io === 'object' && io !== null && 'holders' in io) {
-      return io as { holders: InstitutionalHolder[]; maxAge: number };
+    if (typeof io === 'object' && io !== null && 'ownershipList' in io) {
+      const { ownershipList, maxAge } = io as { ownershipList: unknown[]; maxAge?: number };
+      return { holders: ownershipList as InstitutionalHolder[], maxAge: maxAge ?? 0 };
     }
     return { holders: [], maxAge: 0 };
   } catch {
@@ -285,8 +293,9 @@ async function fetchFundHolders(symbol: string): Promise<{
     }
 
     const fo = result.fundOwnership as unknown;
-    if (typeof fo === 'object' && fo !== null && 'holders' in fo) {
-      return fo as { holders: FundHolder[]; maxAge: number };
+    if (typeof fo === 'object' && fo !== null && 'ownershipList' in fo) {
+      const { ownershipList, maxAge } = fo as { ownershipList: unknown[]; maxAge?: number };
+      return { holders: ownershipList as FundHolder[], maxAge: maxAge ?? 0 };
     }
     return { holders: [], maxAge: 0 };
   } catch {
@@ -359,7 +368,7 @@ async function getHolderData(
   const fundHolders = fundData.holders.map(convertFundHolder);
   const convertedInsiderHolders = insiderData.holders.map(convertInsiderHolder);
   const directHolders = directData.holders.map((item) => {
-    const converted = convertDirectHolder(item as unknown as Record<string, unknown>);
+    const converted = convertDirectHolder(item);
     return converted;
   });
 
@@ -383,7 +392,7 @@ async function getHolderData(
     }
   };
 
-  cache.set(cacheKey, result as HolderResult);
+  cache.set(cacheKey, result);
 
   return result;
 }
@@ -484,24 +493,24 @@ export async function getMajorHoldersTool(
       holderName: holder.holderName,
       holderType: holder.holderType,
       relation: 'indirect',
-      lastReported: holder.lastReported,
+      lastReported: holder.lastReported.fmt.split('T')[0],
       positionDirect: null,
       positionDirectDate: null,
-      positionIndirect: holder.position,
-      positionIndirectDate: holder.lastReported,
-      position: holder.position,
+      positionIndirect: holder.position.raw,
+      positionIndirectDate: holder.lastReported.fmt.split('T')[0],
+      position: holder.position.raw,
       changeHistory: includeChangeHistory ? buildChangeHistory(holder.holderName, holder.position.raw, data.majorHoldersBreakdown.maxAge) : undefined
     })),
     fundHolders: data.fundHolders.holders.map((holder) => ({
       holderName: holder.holderName,
       holderType: 'institution',
       relation: 'indirect',
-      lastReported: holder.lastReported,
+      lastReported: holder.lastReported.fmt.split('T')[0],
       positionDirect: null,
       positionDirectDate: null,
-      positionIndirect: holder.position,
-      positionIndirectDate: holder.lastReported,
-      position: holder.position,
+      positionIndirect: holder.position.raw,
+      positionIndirectDate: holder.lastReported.fmt.split('T')[0],
+      position: holder.position.raw,
       changeHistory: includeChangeHistory ? buildChangeHistory(holder.holderName, holder.position.raw, data.majorHoldersBreakdown.maxAge) : undefined
     })),
     insiderHolders: data.insiderHolders.holders.map((holder) => ({
@@ -516,7 +525,18 @@ export async function getMajorHoldersTool(
       position: holder.relation.latestTransaction.positionDirect + holder.relation.latestTransaction.positionIndirect,
       changeHistory: includeChangeHistory ? buildChangeHistory(holder.name, holder.relation.latestTransaction.positionDirect, data.insiderHolders.maxAge) : undefined
     })),
-    directHolders: data.directHolders,
+    directHolders: data.directHolders.holders.map((holder) => ({
+      holderName: holder.holderName,
+      holderType: holder.holderType,
+      relation: 'direct',
+      lastReported: holder.lastReported.fmt.split('T')[0],
+      positionDirect: holder.positionDirect.raw,
+      positionDirectDate: holder.positionDirectDate.fmt.split('T')[0],
+      positionIndirect: holder.positionIndirect.raw,
+      positionIndirectDate: holder.positionIndirectDate.fmt.split('T')[0],
+      position: holder.position.raw,
+      changeHistory: includeChangeHistory ? buildChangeHistory(holder.holderName, holder.position.raw, data.directHolders.maxAge) : undefined
+    })),
     meta
   };
 

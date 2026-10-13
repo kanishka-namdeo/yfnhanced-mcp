@@ -123,7 +123,7 @@ export const yahooFinance = new YahooFinance({
 });
 
 // yahoo-finance2 reports contractSize as a string; the repo's contract rows are numeric.
-export function toOptionContract(contract: RawOptionContract) {
+export function toOptionContract(contract: RawOptionContract): OptionsExpiration['calls'][number] {
   const asCount = (value: number | string | undefined): number => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
@@ -514,8 +514,17 @@ export class YahooFinanceClient {
     return this.executeWithMiddleware(
       `earnings:${symbol}`,
       async () => {
-        const result = await this.yahooFinanceInstance.quoteSummary(symbol, { modules: ['earnings'] });
-        const validated = this.validateEarnings(result);
+        const raw = await this.yahooFinanceInstance.quoteSummary(symbol, {
+          modules: ['earnings', 'earningsTrend', 'industryTrend']
+        });
+
+        // quoteSummary nests each module under its own key; EarningsResult describes the
+        // earnings module payload itself, so the unwrap has to happen here.
+        const validated = this.validateEarnings({
+          ...raw.earnings,
+          earningsTrend: raw.earningsTrend?.trend ?? [],
+          industryTrend: raw.industryTrend ? [raw.industryTrend] : []
+        });
         return validated;
       },
       options
@@ -526,9 +535,59 @@ export class YahooFinanceClient {
     return this.executeWithMiddleware(
       `analysis:${symbol}`,
       async () => {
-        const result = await this.yahooFinanceInstance.quoteSummary(symbol, { modules: ['earningsTrend', 'industryTrend'] });
-        const validated = this.validateAnalysis(result);
-        return validated;
+        const raw = await this.yahooFinanceInstance.quoteSummary(symbol, {
+          modules: ['earningsTrend', 'recommendationTrend', 'financialData', 'industryTrend', 'price']
+        });
+
+        const numbers = (value: number | null | undefined): number => (typeof value === 'number' ? value : 0);
+        const strings = (value: string | null | undefined): string => (typeof value === 'string' ? value : '');
+        // The repo's trend rows carry {fmt, raw} dates; quoteSummary hands back Date.
+        const toFmtRaw = (value: Date | null | undefined): { fmt: string; raw: number } => ({
+          fmt: value instanceof Date ? value.toISOString().split('T')[0] : '',
+          raw: value instanceof Date ? Math.floor(value.getTime() / 1000) : 0
+        });
+
+        const recommendationRows = raw.recommendationTrend?.trend ?? [];
+        const ratings = recommendationRows[0];
+        const industryEstimates = (raw.industryTrend?.estimates ?? []) as Array<Record<string, unknown>>;
+
+        const assembled: AnalysisResult = {
+          earningsTrend: (raw.earningsTrend?.trend ?? []).map((row) => ({
+            ...row,
+            endDate: toFmtRaw(row.endDate)
+          })) as unknown as AnalysisResult['earningsTrend'],
+          industryTrend: raw.industryTrend
+            ? [
+                {
+                  name: strings(raw.industryTrend.symbol),
+                  estimates: industryEstimates.map((estimate) => ({
+                    period: strings(estimate.period as string),
+                    estimate: numbers(estimate.growth as number),
+                    actual: typeof estimate.actual === 'number' ? estimate.actual : null
+                  }))
+                }
+              ]
+            : [],
+          analystOpinion: {
+            companyName: strings(raw.price?.longName),
+            currentRatings: {
+              strongBuy: numbers(ratings?.strongBuy),
+              buy: numbers(ratings?.buy),
+              hold: numbers(ratings?.hold),
+              sell: numbers(ratings?.sell),
+              strongSell: numbers(ratings?.strongSell)
+            },
+            currentOpinion: strings(raw.financialData?.recommendationKey),
+            targetPrice: numbers(raw.financialData?.targetMeanPrice),
+            recommendationKey: strings(raw.financialData?.recommendationKey)
+          },
+          recommendationTrend: {
+            trend: recommendationRows,
+            maxAge: numbers(raw.recommendationTrend?.maxAge)
+          }
+        };
+
+        return this.validateAnalysis(assembled);
       },
       options
     );
