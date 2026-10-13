@@ -1,3 +1,101 @@
+import type { DataWarning } from './errors.js';
+
+// v4 shapes for the paths this server reads: search() news, options(), trendingSymbols(), screener().
+export type RawSearchNews = {
+  uuid?: string;
+  title?: string;
+  publisher?: string;
+  link?: string;
+  providerPublishTime?: Date;
+  type?: string;
+  relatedTickers?: string[];
+  thumbnail?: { resolutions?: Array<{ url?: string; width?: number; height?: number; tag?: string }> };
+};
+
+export type RawSearchResult = {
+  count?: number;
+  news?: RawSearchNews[];
+};
+
+export type RawOptionContract = {
+  contractSymbol?: string;
+  strike?: number;
+  lastPrice?: number;
+  change?: number;
+  percentChange?: number;
+  volume?: number;
+  openInterest?: number;
+  bid?: number;
+  ask?: number;
+  impliedVolatility?: number;
+  inTheMoney?: boolean;
+  contractSize?: string;
+  currency?: string;
+};
+
+export type RawOptionsResult = {
+  underlyingSymbol?: string;
+  expirationDates?: Date[];
+  strikes?: number[];
+  hasMiniOptions?: boolean;
+  quote?: RawQuote;
+  options?: Array<{
+    date?: Date;
+    expirationDate?: Date;
+    hasMiniOptions?: boolean;
+    calls?: RawOptionContract[];
+    puts?: RawOptionContract[];
+  }>;
+};
+
+export type RawTrendingSymbol = {
+  symbol?: string;
+  name?: string;
+  lastPrice?: number;
+  change?: number;
+  changePercent?: number;
+  volume?: number;
+  marketCap?: number;
+  type?: string;
+};
+
+export type RawTrendingResult = {
+  count?: number;
+  quotes?: RawTrendingSymbol[];
+  jobTimestamp?: number;
+  startInterval?: number;
+  endInterval?: number;
+};
+
+export type RawScreenerQuote = {
+  symbol?: string;
+  shortName?: string;
+  longName?: string;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  regularMarketVolume?: number;
+  marketCap?: number;
+  sector?: string;
+  industry?: string;
+  trailingPE?: number;
+  dividendYield?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  beta?: number;
+  epsTrailingTwelveMonths?: number;
+};
+
+export type RawScreenerResult = {
+  id?: string;
+  title?: string;
+  description?: string;
+  start?: number;
+  count?: number;
+  total?: number;
+  quotes?: RawScreenerQuote[];
+};
+
 export type PriceData = {
   regularMarketPrice: number | null;
   regularMarketChange: number | null;
@@ -30,47 +128,106 @@ export type PriceData = {
   postMarketChange: number | null;
   postMarketChangePercent: number | null;
   postMarketTime: number | null;
+  trailingPE: number | null;
+  forwardPE: number | null;
+  trailingEps: number | null;
+  forwardEps: number | null;
+  epsTrailingTwelveMonths: number | null;
+  dividendRate: number | null;
+  dividendYield: number | null;
+  trailingAnnualDividendYield: number | null;
+  exDividendDate: string | null;
+  beta: number | null;
+  sharesOutstanding: number | null;
+  impliedSharesOutstanding: number | null;
+  averageTrueRange: number | null;
+  fiftyDayAverage: number | null;
+  twoHundredDayAverage: number | null;
+  fiftyTwoWeekChangePercent: number | null;
+  quoteSourceName: string | null;
+};
+
+// The flat object yahoo-finance2 v4 returns from quote(); timestamps arrive as Date, not epoch.
+// Matches yahoo-finance2 chart() ChartOptions.interval exactly.
+export type HistoricalInterval =
+  | '1m' | '2m' | '5m' | '15m' | '30m' | '60m' | '90m'
+  | '1h' | '1d' | '5d' | '1wk' | '1mo' | '3mo';
+
+export type RawQuote = {
+  symbol?: string;
+  shortName?: string;
+  longName?: string;
+  language?: string;
+  region?: string;
+  quoteType?: string;
+  typeDisp?: string;
+  marketState?: string;
+  currency?: string;
+  exchange?: string;
+  fullExchangeName?: string;
+  exchangeTimezoneName?: string;
+  exchangeTimezoneShortName?: string;
+  gmtOffSetMilliseconds?: number;
+  market?: string;
+  quoteSourceName?: string;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  regularMarketPreviousClose?: number;
+  regularMarketOpen?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+  regularMarketVolume?: number;
+  regularMarketTime?: Date;
+  marketCap?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  fiftyTwoWeekChangePercent?: number;
+  averageDailyVolume3Month?: number;
+  averageDailyVolume10Day?: number;
+  fiftyDayAverage?: number;
+  twoHundredDayAverage?: number;
+  trailingPE?: number;
+  forwardPE?: number;
+  trailingEps?: number;
+  forwardEps?: number;
+  epsTrailingTwelveMonths?: number;
+  dividendRate?: number;
+  dividendYield?: number;
+  trailingAnnualDividendYield?: number;
+  dividendDate?: Date;
+  beta?: number;
+  sharesOutstanding?: number;
+  impliedSharesOutstanding?: number;
+  averageTrueRange?: number;
+  preMarketPrice?: number;
+  preMarketChange?: number;
+  preMarketChangePercent?: number;
+  preMarketTime?: Date;
+  postMarketPrice?: number;
+  postMarketChange?: number;
+  postMarketChangePercent?: number;
+  postMarketTime?: Date;
+  firstTradeDateMilliseconds?: number;
+  priceHint?: number;
+  chartPreviousClose?: number;
 };
 
 export type QuoteResult = {
   price: PriceData;
   meta?: {
-    currency: string;
     symbol: string;
-    exchangeName: string;
-    instrumentType: string;
-    firstTradeDate: number;
-    regularMarketTime: number;
-    gmtoffset: number;
-    timezone: string;
-    exchangeTimezoneName: string;
-    regularMarketPrice: number;
-    chartPreviousClose: number;
-    priceHint: number;
-    currentTradingPeriod: {
-      pre: {
-        timezone: string;
-        start: number;
-        end: number;
-        gmtoffset: number;
-      };
-      regular: {
-        timezone: string;
-        start: number;
-        end: number;
-        gmtoffset: number;
-      };
-      post: {
-        timezone: string;
-        start: number;
-        end: number;
-        gmtoffset: number;
-      };
-    };
-    dataGranularity: string;
-    range: string;
-    validRanges: string[];
+    currency: string | null;
+    exchangeName: string | null;
+    instrumentType: string | null;
+    exchangeTimezoneName: string | null;
+    regularMarketTime: number | null;
+    firstTradeDate: number | null;
+    gmtoffset: number | null;
+    priceHint: number | null;
+    chartPreviousClose: number | null;
   };
+  warnings?: DataWarning[];
 };
 
 export type HistoricalPriceData = {
@@ -85,41 +242,48 @@ export type HistoricalPriceData = {
 };
 
 export type HistoricalPriceMeta = {
-  currency: string;
-  symbol: string;
-  exchangeName: string;
-  instrumentType: string;
-  firstTradeDate: number;
-  regularMarketTime: number;
-  gmtoffset: number;
-  timezone: string;
-  exchangeTimezoneName: string;
-  regularMarketPrice: number;
-  chartPreviousClose: number;
-  priceHint: number;
-  currentTradingPeriod: {
-    pre: {
-      timezone: string;
-      start: number;
-      end: number;
-      gmtoffset: number;
-    };
-    regular: {
-      timezone: string;
-      start: number;
-      end: number;
-      gmtoffset: number;
-    };
-    post: {
-      timezone: string;
-      start: number;
-      end: number;
-      gmtoffset: number;
-    };
+  currency: string | null;
+  symbol: string | null;
+  exchangeName: string | null;
+  instrumentType: string | null;
+  firstTradeDate: number | null;
+  regularMarketTime: number | null;
+  gmtoffset: number | null;
+  timezone: string | null;
+  exchangeTimezoneName: string | null;
+  regularMarketPrice: number | null;
+  chartPreviousClose: number | null;
+  priceHint: number | null;
+};
+
+// chart(..., { return: 'object' }) is the v4 source for historical data.
+// It mirrors HistoricalPriceResult except `timestamp` (singular) and Date-typed meta times.
+export type RawChartResult = {
+  timestamp?: number[];
+  meta?: {
+    currency?: string;
+    symbol?: string;
+    exchangeName?: string;
+    instrumentType?: string;
+    firstTradeDate?: Date | number | null;
+    regularMarketTime?: Date | number;
+    gmtoffset?: number;
+    timezone?: string;
+    exchangeTimezoneName?: string;
+    regularMarketPrice?: number;
+    chartPreviousClose?: number;
+    priceHint?: number;
   };
-  dataGranularity: string;
-  range: string;
-  validRanges: string[];
+  indicators?: {
+    quote?: Array<{
+      open?: Array<number | null>;
+      high?: Array<number | null>;
+      low?: Array<number | null>;
+      close?: Array<number | null>;
+      volume?: Array<number | null>;
+    }>;
+    adjclose?: Array<{ adjclose?: Array<number | null> }>;
+  };
 };
 
 export type HistoricalPriceResult = {
@@ -615,7 +779,7 @@ export type OptionsExpiration = {
 export type OptionsResult = {
   expirationDates: number[];
   options: OptionsExpiration[];
-  quote: PriceData;
+  quote: RawQuote;
 };
 
 export type SummaryProfile = {

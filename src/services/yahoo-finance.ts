@@ -2,7 +2,21 @@ import YahooFinance from 'yahoo-finance2';
 import type { MCPServerConfig } from '../types/config.js';
 import type {
   QuoteResult,
+  RawQuote,
   HistoricalPriceResult,
+  HistoricalInterval,
+  RawChartResult,
+  RawSearchNews,
+  RawOptionsResult,
+  RawOptionContract,
+  RawTrendingResult,
+  RawTrendingSymbol,
+  RawScreenerResult,
+  RawScreenerQuote,
+  NewsItem,
+  OptionsExpiration,
+  TrendingQuote,
+  ScreenerMatch,
   FinancialStatementResult,
   EarningsResult,
   AnalysisResult,
@@ -46,7 +60,7 @@ type GetQuoteOptions = YahooFinanceOptions & {
 type GetHistoricalOptions = YahooFinanceOptions & {
   period1?: string | Date;
   period2?: string | Date;
-  interval?: string;
+  interval?: HistoricalInterval;
 };
 
 type GetFinancialsOptions = YahooFinanceOptions & {
@@ -69,7 +83,9 @@ type GetCryptoOptions = YahooFinanceOptions;
 
 type GetForexOptions = YahooFinanceOptions;
 
-type GetTrendingOptions = YahooFinanceOptions;
+type GetTrendingOptions = YahooFinanceOptions & {
+  region?: string;
+};
 
 type ScreenerFilters = {
   field?: string;
@@ -88,6 +104,47 @@ type AlternativeEndpoint = {
   method: 'GET' | 'POST';
   headers?: Record<string, string>;
 };
+
+// stdout is the MCP channel, and console.info/warn write to stdout in Node, so every
+// library log line is steered to console.error or it corrupts JSON-RPC framing.
+const STDERR_LOGGER = {
+  info: (...args: unknown[]) => console.error(...args),
+  warn: (...args: unknown[]) => console.error(...args),
+  error: (...args: unknown[]) => console.error(...args),
+  debug: (...args: unknown[]) => console.error(...args),
+  dir: (...args: unknown[]) => console.error(...args)
+};
+
+// yahoo-finance2 v4 keeps cookie, crumb, queue and debounce state per instance, so one
+// process-wide instance is reused everywhere instead of one per module or per call.
+export const yahooFinance = new YahooFinance({
+  logger: STDERR_LOGGER,
+  suppressNotices: ['yahooSurvey']
+});
+
+// yahoo-finance2 reports contractSize as a string; the repo's contract rows are numeric.
+export function toOptionContract(contract: RawOptionContract) {
+  const asCount = (value: number | string | undefined): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  return {
+    contractSymbol: contract.contractSymbol ?? '',
+    strike: contract.strike ?? 0,
+    lastPrice: contract.lastPrice ?? 0,
+    change: contract.change ?? 0,
+    percentChange: contract.percentChange ?? 0,
+    volume: contract.volume ?? 0,
+    openInterest: contract.openInterest ?? 0,
+    bid: contract.bid ?? 0,
+    ask: contract.ask ?? 0,
+    impliedVolatility: contract.impliedVolatility ?? 0,
+    inTheMoney: contract.inTheMoney ?? false,
+    contractSize: asCount(contract.contractSize),
+    currency: contract.currency ?? ''
+  };
+}
 
 export class YahooFinanceClient {
   private config: MCPServerConfig;
@@ -112,7 +169,7 @@ export class YahooFinanceClient {
     this.alternativeEndpoints = new Map();
     this.fallbackCache = new Map();
     this.initialized = false;
-    this.yahooFinanceInstance = new YahooFinance();
+    this.yahooFinanceInstance = yahooFinance;
     this.warnings = [];
 
     this.rateLimiter.setCache({
@@ -131,7 +188,9 @@ export class YahooFinanceClient {
       const symbol = key.split(':')[1];
       try {
         const result = await this.yahooFinanceInstance.quote(symbol);
-        await this.cache.set(key, result, 60000);
+        // Cache the mapped shape: getQuote returns QuoteResult on a miss, so a warm
+        // entry holding the raw library object would make hits and misses differ.
+        await this.cache.set(key, this.validateQuote(result), 60000);
       } catch {
       }
     });
@@ -353,19 +412,73 @@ export class YahooFinanceClient {
   }
 
   getHistoricalPrices(symbol: string, options?: GetHistoricalOptions): Promise<HistoricalPriceResult> {
+    const period1 = options?.period1 ?? '1970-01-01';
+    const interval = options?.interval ?? '1d';
+    const cacheKey = `historical:${symbol}:${String(period1)}:${options?.period2 ?? 'now'}:${interval}`;
+
     return this.executeWithMiddleware(
-      `historical:${symbol}`,
+      cacheKey,
       async () => {
-        const result = await this.yahooFinanceInstance.historical(symbol, {
-          period1: options?.period1 ?? '1970-01-01',
+        const result = await this.yahooFinanceInstance.chart(symbol, {
+          period1,
           period2: options?.period2,
-          interval: options?.interval as "1d" | "1wk" | "1mo" | undefined
+          interval,
+          return: 'object'
         });
-        const validated = this.validateHistorical(result);
-        return validated;
+        return this.validateHistorical(this.mapChartToHistorical(result));
       },
       options
     );
+  }
+
+  private mapChartToHistorical(result: RawChartResult): HistoricalPriceResult {
+    const meta = result.meta ?? {};
+    const asEpoch = (value: Date | number | null | undefined): number | null =>
+      value instanceof Date ? value.getTime() : typeof value === 'number' ? value : null;
+
+    const quoteSeries = result.indicators?.quote?.[0];
+
+    if (quoteSeries === undefined) {
+      throw new YahooFinanceError(
+        'Historical result contains no price series',
+        YF_ERR_DATA_INCOMPLETE,
+        null,
+        false,
+        false,
+        { symbol: meta.symbol },
+        'Retry the request or widen the date range'
+      );
+    }
+
+    return {
+      timestamps: result.timestamp ?? [],
+      meta: {
+        currency: meta.currency ?? null,
+        symbol: meta.symbol ?? null,
+        exchangeName: meta.exchangeName ?? null,
+        instrumentType: meta.instrumentType ?? null,
+        firstTradeDate: asEpoch(meta.firstTradeDate),
+        regularMarketTime: asEpoch(meta.regularMarketTime),
+        gmtoffset: meta.gmtoffset ?? null,
+        timezone: meta.timezone ?? null,
+        exchangeTimezoneName: meta.exchangeTimezoneName ?? null,
+        regularMarketPrice: meta.regularMarketPrice ?? null,
+        chartPreviousClose: meta.chartPreviousClose ?? null,
+        priceHint: meta.priceHint ?? null
+      },
+      indicators: {
+        quote: [
+          {
+            open: quoteSeries.open ?? [],
+            high: quoteSeries.high ?? [],
+            low: quoteSeries.low ?? [],
+            close: quoteSeries.close ?? [],
+            volume: quoteSeries.volume ?? []
+          }
+        ],
+        adjclose: [{ adjclose: result.indicators?.adjclose?.[0]?.adjclose ?? [] }]
+      }
+    };
   }
 
   getFinancials(
@@ -422,14 +535,39 @@ export class YahooFinanceClient {
   }
 
   getNews(symbol: string, options?: GetNewsOptions): Promise<NewsResult> {
+    const count = options?.count ?? 10;
+
     return this.executeWithMiddleware(
-      `news:${symbol}`,
+      `news:${symbol}:${count}`,
       async () => {
-        const result = await this.yahooFinanceInstance.quoteSummary(symbol, {
-          modules: ['news' as unknown as never]
+        const result = await this.yahooFinanceInstance.search(symbol, {
+          newsCount: count,
+          quotesCount: 1
         });
-        const validated = this.validateNews(result);
-        return validated;
+
+        const news: NewsItem[] = (result.news ?? []).map((item: RawSearchNews) => ({
+          uuid: item.uuid ?? '',
+          title: item.title ?? '',
+          publisher: item.publisher ?? '',
+          link: item.link ?? '',
+          providerPublishTime: item.providerPublishTime instanceof Date
+            ? item.providerPublishTime.getTime()
+            : 0,
+          type: item.type ?? '',
+          thumbnail: item.thumbnail?.resolutions
+            ? {
+                resolutions: item.thumbnail.resolutions.map((resolution) => ({
+                  url: resolution.url ?? '',
+                  width: resolution.width ?? 0,
+                  height: resolution.height ?? 0,
+                  tag: resolution.tag ?? ''
+                }))
+              }
+            : undefined,
+          relatedTickers: item.relatedTickers ?? []
+        }));
+
+        return this.validateNews({ count: news.length, news });
       },
       options
     );
@@ -439,11 +577,25 @@ export class YahooFinanceClient {
     return this.executeWithMiddleware(
       `options:${symbol}`,
       async () => {
-        const result = await this.yahooFinanceInstance.quoteSummary(symbol, {
-          modules: ['optionChain' as unknown as never]
-        });
-        const validated = this.validateOptions(result);
-        return validated;
+        const raw = (await this.yahooFinanceInstance.options(symbol)) as RawOptionsResult;
+        const asEpoch = (value: Date | undefined): number =>
+          value instanceof Date ? value.getTime() : 0;
+
+        const expirations: OptionsExpiration[] = (raw.options ?? []).map((expiration) => ({
+          date: asEpoch(expiration.date),
+          expirationDate: asEpoch(expiration.expirationDate),
+          hasMiniOptions: expiration.hasMiniOptions ?? false,
+          calls: (expiration.calls ?? []).map(toOptionContract),
+          puts: (expiration.puts ?? []).map(toOptionContract)
+        }));
+
+        const mapped: OptionsResult = {
+          expirationDates: (raw.expirationDates ?? []).map(asEpoch),
+          options: expirations,
+          quote: raw.quote ?? {}
+        };
+
+        return this.validateOptions(mapped);
       },
       options
     );
@@ -506,7 +658,11 @@ export class YahooFinanceClient {
         results[pair] = await this.executeWithMiddleware(
           `forex:${pair}`,
           async () => {
-            const result = await this.yahooFinanceInstance.quote(pair);
+            // Yahoo names FX pairs with an =X suffix, which InputValidator forbids a
+            // caller from typing, so the suffix is added here and results stay keyed
+            // by the symbol the caller asked for.
+            const lookup = pair.includes('=') || pair.includes('-') ? pair : `${pair}=X`;
+            const result = await this.yahooFinanceInstance.quote(lookup);
             const validated = this.validateForexQuote(result);
             return validated;
           },
@@ -534,28 +690,106 @@ export class YahooFinanceClient {
   }
 
   getTrending(options?: GetTrendingOptions): Promise<TrendingResult> {
+    const region = options?.region ?? 'US';
+
     return this.executeWithMiddleware(
-      'trending',
+      `trending:${region}`,
       async () => {
-        const result = await this.yahooFinanceInstance.trendingSymbols('US');
-        const validated = this.validateTrending(result);
-        return validated;
+        const raw = (await this.yahooFinanceInstance.trendingSymbols(
+          region
+        )) as RawTrendingResult;
+
+        const symbols = (raw.quotes ?? [])
+          .map((entry: RawTrendingSymbol) => entry.symbol)
+          .filter((symbol): symbol is string => typeof symbol === 'string' && symbol.length > 0);
+
+        // trendingSymbols reports symbols only; prices require a second lookup.
+        const priced = symbols.length > 0
+          ? (await this.yahooFinanceInstance.quote(symbols)) as RawQuote[]
+          : [];
+
+        const bySymbol = new Map<string, RawQuote>(priced.map((quote) => [quote.symbol ?? '', quote]));
+
+        const quotes: TrendingQuote[] = symbols.map((symbol) => {
+          const quote = bySymbol.get(symbol) ?? {};
+
+          return {
+            symbol,
+            name: quote.longName ?? quote.shortName ?? '',
+            lastPrice: quote.regularMarketPrice ?? 0,
+            change: quote.regularMarketChange ?? 0,
+            changePercent: quote.regularMarketChangePercent ?? 0,
+            volume: quote.regularMarketVolume ?? 0,
+            marketCap: quote.marketCap ?? 0,
+            type: quote.quoteType ?? ''
+          };
+        });
+
+        return this.validateTrending({
+          quotes,
+          jobTimestamp: raw.jobTimestamp ?? 0,
+          startInterval: raw.startInterval ?? 0,
+          endInterval: raw.endInterval ?? 0
+        });
       },
       options
     );
   }
 
   screener(filters?: ScreenerFilters[], options?: GetScreenerOptions): Promise<ScreenerResult> {
+    const count = options?.count;
+    const start = options?.offset;
+
     return this.executeWithMiddleware(
-      `screener:${JSON.stringify(filters)}`,
+      `screener:${JSON.stringify(filters)}:${count ?? ''}:${start ?? ''}`,
       async () => {
-        const result = await this.yahooFinanceInstance.screener({
+        const raw = (await this.yahooFinanceInstance.screener({
           scrIds: 'most_actives',
-          ...filters?.[0],
-          count: options?.count
+          ...(count === undefined ? {} : { count }),
+          ...(start === undefined ? {} : { start })
+        })) as RawScreenerResult;
+
+        const matches: ScreenerMatch[] = (raw.quotes ?? []).map((quote: RawScreenerQuote) => ({
+          symbol: quote.symbol ?? '',
+          name: quote.longName ?? quote.shortName ?? '',
+          lastPrice: quote.regularMarketPrice ?? 0,
+          change: quote.regularMarketChange ?? 0,
+          changePercent: quote.regularMarketChangePercent ?? 0,
+          volume: quote.regularMarketVolume ?? 0,
+          marketCap: quote.marketCap ?? 0,
+          sector: quote.sector ?? '',
+          industry: quote.industry ?? '',
+          peRatio: quote.trailingPE ?? null,
+          dividendYield: quote.dividendYield ?? null,
+          fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh ?? null,
+          fiftyTwoWeekLow: quote.fiftyTwoWeekLow ?? null,
+          beta: quote.beta ?? null,
+          eps: quote.epsTrailingTwelveMonths ?? null
+        }));
+
+        const hasFilters = filters !== undefined && filters.length > 0;
+
+        return this.validateScreener({
+          finance: {
+            result: [
+              {
+                quotes: matches,
+                meta: {
+                  count: raw.count ?? matches.length,
+                  start: raw.start ?? 0,
+                  end: (raw.start ?? 0) + matches.length
+                }
+              }
+            ],
+            error: hasFilters
+              ? {
+                  code: 'FILTERS_NOT_APPLIED',
+                  description:
+                    'Custom screener filters are not supported by the predefined most_actives module; results are unfiltered'
+                }
+              : undefined
+          }
         });
-        const validated = this.validateScreener(result);
-        return validated;
       },
       options
     );
@@ -634,6 +868,67 @@ export class YahooFinanceClient {
     });
   }
 
+  private toPriceData(raw: RawQuote): PriceData {
+    const asNumber = (value: number | undefined): number | null =>
+      value === undefined || Number.isNaN(value) ? null : value;
+    const asString = (value: string | undefined): string | null => value ?? null;
+    const asEpoch = (value: Date | undefined): number | null =>
+      value instanceof Date ? value.getTime() : null;
+    const asIsoDate = (value: Date | undefined): string | null =>
+      value instanceof Date ? value.toISOString() : null;
+
+    return {
+      symbol: raw.symbol ?? '',
+      shortName: asString(raw.shortName),
+      longName: asString(raw.longName),
+      currency: asString(raw.currency),
+      marketState: asString(raw.marketState),
+      quoteType: asString(raw.quoteType),
+      exchange: asString(raw.exchange),
+      exchangeTimezoneName: asString(raw.exchangeTimezoneName),
+      exchangeTimezoneShortName: asString(raw.exchangeTimezoneShortName),
+      gmtOffSetMilliseconds: asNumber(raw.gmtOffSetMilliseconds),
+      quoteSourceName: asString(raw.quoteSourceName),
+      regularMarketPrice: asNumber(raw.regularMarketPrice),
+      regularMarketChange: asNumber(raw.regularMarketChange),
+      regularMarketChangePercent: asNumber(raw.regularMarketChangePercent),
+      regularMarketPreviousClose: asNumber(raw.regularMarketPreviousClose),
+      regularMarketOpen: asNumber(raw.regularMarketOpen),
+      regularMarketDayHigh: asNumber(raw.regularMarketDayHigh),
+      regularMarketDayLow: asNumber(raw.regularMarketDayLow),
+      regularMarketVolume: asNumber(raw.regularMarketVolume),
+      marketCap: asNumber(raw.marketCap),
+      fiftyTwoWeekHigh: asNumber(raw.fiftyTwoWeekHigh),
+      fiftyTwoWeekLow: asNumber(raw.fiftyTwoWeekLow),
+      fiftyTwoWeekChangePercent: asNumber(raw.fiftyTwoWeekChangePercent),
+      averageDailyVolume3Month: asNumber(raw.averageDailyVolume3Month),
+      averageDailyVolume10Day: asNumber(raw.averageDailyVolume10Day),
+      fiftyDayAverage: asNumber(raw.fiftyDayAverage),
+      twoHundredDayAverage: asNumber(raw.twoHundredDayAverage),
+      trailingPE: asNumber(raw.trailingPE),
+      forwardPE: asNumber(raw.forwardPE),
+      trailingEps: asNumber(raw.trailingEps),
+      forwardEps: asNumber(raw.forwardEps),
+      epsTrailingTwelveMonths: asNumber(raw.epsTrailingTwelveMonths),
+      dividendRate: asNumber(raw.dividendRate),
+      dividendYield: asNumber(raw.dividendYield),
+      trailingAnnualDividendYield: asNumber(raw.trailingAnnualDividendYield),
+      exDividendDate: asIsoDate(raw.dividendDate),
+      beta: asNumber(raw.beta),
+      sharesOutstanding: asNumber(raw.sharesOutstanding),
+      impliedSharesOutstanding: asNumber(raw.impliedSharesOutstanding),
+      averageTrueRange: asNumber(raw.averageTrueRange),
+      preMarketPrice: asNumber(raw.preMarketPrice),
+      preMarketChange: asNumber(raw.preMarketChange),
+      preMarketChangePercent: asNumber(raw.preMarketChangePercent),
+      preMarketTime: asEpoch(raw.preMarketTime),
+      postMarketPrice: asNumber(raw.postMarketPrice),
+      postMarketChange: asNumber(raw.postMarketChange),
+      postMarketChangePercent: asNumber(raw.postMarketChangePercent),
+      postMarketTime: asEpoch(raw.postMarketTime)
+    };
+  }
+
   validateQuote(result: unknown): QuoteResult {
     if (result === null || typeof result !== 'object') {
       throw new YahooFinanceError(
@@ -649,21 +944,16 @@ export class YahooFinanceClient {
       );
     }
 
-    const quote = result as Partial<QuoteResult>;
+    const raw = result as RawQuote;
     const warnings: DataWarning[] = [];
+    const price = this.toPriceData(raw);
 
-    // Graceful degradation: initialize price object if missing
-    if (quote.price === undefined) {
-      quote.price = {} as PriceData;
-      warnings.push({
-        field: 'price',
-        severity: 'warning',
-        message: 'Price object missing - initialized with empty structure',
-        timestamp: new Date()
-      });
-    }
+    const asString = (value: string | undefined): string | null => value ?? null;
+    const asNumber = (value: number | undefined): number | null =>
+      value === undefined || Number.isNaN(value) ? null : value;
+    const asEpoch = (value: Date | undefined): number | null =>
+      value instanceof Date ? value.getTime() : null;
 
-    // Fill in missing critical fields with null instead of throwing errors
     const critical: Array<keyof PriceData> = [
       'regularMarketPrice',
       'regularMarketChange',
@@ -684,31 +974,29 @@ export class YahooFinanceClient {
       'quoteType'
     ];
 
-    const allFields = [...critical, ...preferred];
-
-    for (const field of allFields) {
-      if ((quote.price as Record<string, unknown>)[field] === undefined) {
-        (quote.price as Record<string, unknown>)[field] = null;
-        if (critical.includes(field)) {
-          warnings.push({
-            field: `price.${field}`,
-            severity: 'warning',
-            message: `Critical price field '${field}' is null or missing - data may be incomplete`,
-            timestamp: new Date()
-          });
-        } else {
-          warnings.push({
-            field: `price.${field}`,
-            severity: 'info',
-            message: `Preferred price field '${field}' is null or missing`,
-            timestamp: new Date()
-          });
-        }
+    for (const field of critical) {
+      if (price[field] === null) {
+        warnings.push({
+          field: `price.${field}`,
+          severity: 'warning',
+          message: `Critical price field '${field}' is null or missing - data may be incomplete`,
+          timestamp: new Date()
+        });
       }
     }
 
-    // Check for symbol (required for data to be useful)
-    if (!quote.price?.symbol) {
+    for (const field of preferred) {
+      if (price[field] === null) {
+        warnings.push({
+          field: `price.${field}`,
+          severity: 'info',
+          message: `Preferred price field '${field}' is null or missing`,
+          timestamp: new Date()
+        });
+      }
+    }
+
+    if (price.symbol === '') {
       warnings.push({
         field: 'symbol',
         severity: 'warning',
@@ -717,23 +1005,27 @@ export class YahooFinanceClient {
       });
     }
 
-    // API change detection - non-fatal
-    if (this.detectAPIChanges(quote)) {
-      warnings.push({
-        field: 'api-structure',
-        severity: 'warning',
-        message: 'API structure may have changed - some fields may be missing',
-        timestamp: new Date()
-      });
-      // Don't throw error, just warn and continue
-    }
+    const quote: QuoteResult = {
+      price,
+      meta: {
+        symbol: price.symbol,
+        currency: price.currency,
+        exchangeName: asString(raw.fullExchangeName),
+        instrumentType: asString(raw.typeDisp) ?? price.quoteType,
+        exchangeTimezoneName: price.exchangeTimezoneName,
+        regularMarketTime: asEpoch(raw.regularMarketTime),
+        firstTradeDate: asNumber(raw.firstTradeDateMilliseconds),
+        gmtoffset: price.gmtOffSetMilliseconds,
+        priceHint: asNumber(raw.priceHint),
+        chartPreviousClose: asNumber(raw.chartPreviousClose)
+      }
+    };
 
-    // Store warnings in the quote result if possible
     if (warnings.length > 0) {
-      (quote as any).warnings = warnings;
+      quote.warnings = warnings;
     }
 
-    return quote as QuoteResult;
+    return quote;
   }
 
   validateHistorical(result: unknown): HistoricalPriceResult {
@@ -785,8 +1077,24 @@ export class YahooFinanceClient {
 
     const financials = result as Partial<FinancialStatementResult>;
 
-    if (this.detectAPIChanges(financials)) {
-      this.handleAPIChange('financials', financials);
+    const statementKeys = [
+      'balanceSheetHistory',
+      'incomeStatementHistory',
+      'cashflowStatementHistory'
+    ];
+
+    const present = statementKeys.filter((key) => key in (result as Record<string, unknown>));
+
+    if (present.length === 0) {
+      throw new YahooFinanceError(
+        'Financial result contained no statement module',
+        YF_ERR_DATA_INCOMPLETE,
+        null,
+        false,
+        false,
+        { result: financials },
+        'Retry the request or use fundamentalsTimeSeries based tools'
+      );
     }
 
     return financials as FinancialStatementResult;
@@ -943,22 +1251,21 @@ export class YahooFinanceClient {
 
     const obj = result as Record<string, unknown>;
 
-    const knownStructures = {
-      quote: ['price', 'meta'],
-      historical: ['meta', 'indicators'],
-      financials: ['balanceSheetHistory', 'incomeStatementHistory', 'cashflowStatementHistory']
-    };
+    // Each endpoint is recognised by its own anchor key, and only that anchor's
+    // companions are required. Matching on any shared key (as a flat list did) let
+    // the quote shape fire on historical results, which then threw API_CHANGED.
+    const shapes: Array<{ anchor: string; companions: string[] }> = [
+      { anchor: 'price', companions: ['meta'] },
+      { anchor: 'indicators', companions: ['meta', 'timestamps'] }
+    ];
 
-    for (const keys of Object.values(knownStructures)) {
-      if (keys.some(key => key in obj)) {
-        const missing = keys.filter(key => !(key in obj));
-        if (missing.length > 0) {
-          return true;
-        }
-      }
+    const recognized = shapes.filter((shape) => shape.anchor in obj);
+
+    if (recognized.length === 0) {
+      return true;
     }
 
-    return false;
+    return recognized.some((shape) => shape.companions.some((key) => !(key in obj)));
   }
 
   handleAPIChange(endpoint: string, result: unknown): void {

@@ -151,7 +151,7 @@ describe('Rate Limit Chaos Tests', () => {
         headers: {
           get: (name: string) => {
             if (name === 'x-ratelimit-limit') return String(limit);
-            if (name === 'x-ratelimit-remaining') => String(limit - requestCounter);
+            if (name === 'x-ratelimit-remaining') return String(limit - requestCounter);
             return null;
           }
         },

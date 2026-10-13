@@ -1,4 +1,4 @@
-import YahooFinance from 'yahoo-finance2';
+import { yahooFinance } from '../services/yahoo-finance.js';
 import { FinancialsInputSchema, FinancialsOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE } from '../types/errors.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
@@ -13,7 +13,7 @@ type FinancialsToolConfig = {
 
 type StatementData = {
   period: string;
-  startDate: string;
+  startDate: string | null;
   endDate: string;
   [key: string]: number | string | null;
 };
@@ -149,7 +149,7 @@ function convertBalanceSheetToStatementData(item: Record<string, unknown>): Stat
 
   const statement: StatementData = {
     period: 'annual',
-    startDate: '',
+    startDate: null,
     endDate,
     totalAssets: extractField(item, 'totalAssets'),
     totalLiab: extractField(item, 'totalLiab'),
@@ -178,7 +178,7 @@ function convertIncomeStatementToStatementData(item: Record<string, unknown>): S
 
   const statement: StatementData = {
     period: 'annual',
-    startDate: '',
+    startDate: null,
     endDate,
     totalRevenue: extractField(item, 'totalRevenue'),
     costOfRevenue: extractField(item, 'costOfRevenue'),
@@ -208,7 +208,7 @@ function convertCashFlowToStatementData(item: Record<string, unknown>): Statemen
 
   const statement: StatementData = {
     period: 'annual',
-    startDate: '',
+    startDate: null,
     endDate,
     totalCashFromOperatingActivities: extractField(item, 'totalCashFromOperatingActivities'),
     capitalExpenditures: extractField(item, 'capitalExpenditures'),
@@ -278,9 +278,8 @@ async function fetchBalanceSheet(
   frequency: 'annual' | 'quarterly' = 'annual'
 ): Promise<BalanceSheet> {
   try {
-    const yf = new YahooFinance();
     // Use a date far in the past to get all available historical data
-    const result = await yf.fundamentalsTimeSeries(symbol, {
+    const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
       module: 'balance-sheet',
       type: frequency,
       period1: new Date(2000, 0, 1) // January 1, 2000
@@ -315,7 +314,7 @@ async function fetchBalanceSheet(
           raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
         },
         totalAssets: item.totalAssets ? { fmt: item.totalAssets.toString(), raw: item.totalAssets } : undefined,
-        totalLiab: item.totalLiabilities ? { fmt: item.totalLiabilities.toString(), raw: item.totalLiabilities } : undefined,
+        totalLiab: item.totalLiabilitiesNetMinorityInterest ? { fmt: item.totalLiabilitiesNetMinorityInterest.toString(), raw: item.totalLiabilitiesNetMinorityInterest } : undefined,
         totalStockholderEquity: item.stockholdersEquity ? { fmt: item.stockholdersEquity.toString(), raw: item.stockholdersEquity } : undefined,
         cash: item.cashAndCashEquivalents ? { fmt: item.cashAndCashEquivalents.toString(), raw: item.cashAndCashEquivalents } : undefined,
         shortTermInvestments: item.cashCashEquivalentsAndShortTermInvestments ? { fmt: item.cashCashEquivalentsAndShortTermInvestments.toString(), raw: item.cashCashEquivalentsAndShortTermInvestments } : undefined,
@@ -357,9 +356,7 @@ async function fetchIncomeStatement(
   frequency: 'annual' | 'quarterly' = 'annual'
 ): Promise<IncomeStatement> {
   try {
-    const yf = new YahooFinance();
-    // Use a date far in past to get all available historical data
-    const result = await yf.fundamentalsTimeSeries(symbol, {
+    const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
       module: 'financials',
       type: frequency,
       period1: new Date(2000, 0, 1) // January 1, 2000
@@ -437,9 +434,7 @@ async function fetchCashFlowStatement(
   frequency: 'annual' | 'quarterly' = 'annual'
 ): Promise<CashFlowStatement> {
   try {
-    const yf = new YahooFinance();
-    // Use a date far in past to get all available historical data
-    const result = await yf.fundamentalsTimeSeries(symbol, {
+    const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
       module: 'cash-flow',
       type: frequency,
       period1: new Date(2000, 0, 1) // January 1, 2000
@@ -691,7 +686,7 @@ export async function getBalanceSheetTool(
 
   const statements = result.statements.map((stmt) => ({
     period: stmt.period,
-    startDate: stmt.startDate,
+    ...(stmt.startDate === null ? {} : { startDate: stmt.startDate }),
     endDate: stmt.endDate,
     balanceSheet: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))
@@ -724,7 +719,7 @@ export async function getIncomeStatementTool(
 
   const statements = result.statements.map((stmt) => ({
     period: stmt.period,
-    startDate: stmt.startDate,
+    ...(stmt.startDate === null ? {} : { startDate: stmt.startDate }),
     endDate: stmt.endDate,
     incomeStatement: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))
@@ -757,7 +752,7 @@ export async function getCashFlowStatementTool(
 
   const statements = result.statements.map((stmt) => ({
     period: stmt.period,
-    startDate: stmt.startDate,
+    ...(stmt.startDate === null ? {} : { startDate: stmt.startDate }),
     endDate: stmt.endDate,
     cashFlowStatement: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))

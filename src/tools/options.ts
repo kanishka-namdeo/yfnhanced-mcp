@@ -1,11 +1,10 @@
-import YahooFinance from 'yahoo-finance2';
+import { yahooFinance, toOptionContract } from '../services/yahoo-finance.js';
 import { OptionsInputSchema, OptionsOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
-import type { OptionsResult, OptionsExpiration, PriceData } from '../types/yahoo-finance.js';
+import type { OptionsResult, OptionsExpiration, RawQuote, RawOptionsResult } from '../types/yahoo-finance.js';
 import { InputValidator } from '../utils/security.js';
 
-const yahooFinance = new YahooFinance();
 const OPTIONS_CACHE_TTL = 3600000;
 
 class OptionsToolCache {
@@ -289,11 +288,12 @@ function convertOptionsExpiration(
 
 async function fetchOptions(symbol: string): Promise<OptionsResult> {
   try {
-    const result = await yahooFinance.quoteSummary(symbol, {
-      modules: ['optionChain' as unknown as never]
-    });
+    const raw = (await yahooFinance.options(symbol)) as RawOptionsResult;
 
-    if (!result?.optionChain) {
+    const asEpoch = (value: Date | undefined): number =>
+      value instanceof Date ? value.getTime() : 0;
+
+    if (!raw.options || raw.options.length === 0) {
       throw new YahooFinanceError(
         `Options data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -305,7 +305,17 @@ async function fetchOptions(symbol: string): Promise<OptionsResult> {
       );
     }
 
-    return result.optionChain as OptionsResult;
+    return {
+      expirationDates: (raw.expirationDates ?? []).map(asEpoch),
+      options: raw.options.map((expiration) => ({
+        date: asEpoch(expiration.date),
+        expirationDate: asEpoch(expiration.expirationDate),
+        hasMiniOptions: expiration.hasMiniOptions ?? false,
+        calls: (expiration.calls ?? []).map(toOptionContract),
+        puts: (expiration.puts ?? []).map(toOptionContract)
+      })),
+      quote: raw.quote ?? {}
+    };
   } catch (error) {
     if (error instanceof YahooFinanceError) {
       throw error;
@@ -371,7 +381,7 @@ async function getOptionsData(
       vega: number | null;
     }>;
   };
-  quote: PriceData;
+  quote: RawQuote;
   expirationDates: number[];
   requestedExpiration: string | null;
   fallbackExpiration: boolean;

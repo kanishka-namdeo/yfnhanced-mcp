@@ -8,7 +8,9 @@ export const FinancialsInputSchema = z.object({
 
 export const FinancialStatementSchema = z.object({
   period: z.string(),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // fundamentalsTimeSeries reports only the period end, so a start date is absent
+  // rather than knowable; an empty string here failed the regex and killed the tool.
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   balanceSheet: z.record(z.string(), z.number().nullable()).optional(),
   incomeStatement: z.record(z.string(), z.number().nullable()).optional(),

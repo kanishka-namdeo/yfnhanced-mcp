@@ -454,7 +454,24 @@ export class DataAggregator {
       postMarketPrice: this.extractNumber(data, 'postMarketPrice'),
       postMarketChange: this.extractNumber(data, 'postMarketChange'),
       postMarketChangePercent: this.extractNumber(data, 'postMarketChangePercent'),
-      postMarketTime: this.extractNumber(data, 'postMarketTime')
+      postMarketTime: this.extractNumber(data, 'postMarketTime'),
+      quoteSourceName: this.extractString(data, 'quoteSourceName'),
+      trailingPE: this.extractNumber(data, 'trailingPE'),
+      forwardPE: this.extractNumber(data, 'forwardPE'),
+      trailingEps: this.extractNumber(data, 'trailingEps'),
+      forwardEps: this.extractNumber(data, 'forwardEps'),
+      epsTrailingTwelveMonths: this.extractNumber(data, 'epsTrailingTwelveMonths'),
+      dividendRate: this.extractNumber(data, 'dividendRate'),
+      dividendYield: this.extractNumber(data, 'dividendYield'),
+      trailingAnnualDividendYield: this.extractNumber(data, 'trailingAnnualDividendYield'),
+      exDividendDate: this.extractString(data, 'dividendDate'),
+      beta: this.extractNumber(data, 'beta'),
+      sharesOutstanding: this.extractNumber(data, 'sharesOutstanding'),
+      impliedSharesOutstanding: this.extractNumber(data, 'impliedSharesOutstanding'),
+      averageTrueRange: this.extractNumber(data, 'averageTrueRange'),
+      fiftyDayAverage: this.extractNumber(data, 'fiftyDayAverage'),
+      twoHundredDayAverage: this.extractNumber(data, 'twoHundredDayAverage'),
+      fiftyTwoWeekChangePercent: this.extractNumber(data, 'fiftyTwoWeekChangePercent')
     };
 
     return {

@@ -1,11 +1,10 @@
-import YahooFinance from 'yahoo-finance2';
+import { yahooFinance } from '../services/yahoo-finance.js';
 import { NewsInputSchema, NewsOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
-import type { NewsItem, NewsResult } from '../types/yahoo-finance.js';
+import type { NewsItem, NewsResult, RawSearchNews } from '../types/yahoo-finance.js';
 import { InputValidator } from '../utils/security.js';
 
-const yahooFinance = new YahooFinance();
 const NEWS_CACHE_TTL = 300000;
 
 class NewsToolCache {
@@ -77,35 +76,34 @@ function convertNewsItem(item: Record<string, unknown>): {
 
 async function fetchNews(symbol: string, count: number = 10): Promise<NewsResult> {
   try {
-    const result = await yahooFinance.quoteSummary(symbol, {
-      modules: ['news' as unknown as never]
+    const result = await yahooFinance.search(symbol, {
+      newsCount: count,
+      quotesCount: 1
     });
 
-    if (!result) {
-      return { count: 0, news: [] };
-    }
+    const news: NewsItem[] = (result.news ?? []).slice(0, count).map((item: RawSearchNews) => ({
+      uuid: item.uuid ?? '',
+      title: item.title ?? '',
+      publisher: item.publisher ?? '',
+      link: item.link ?? '',
+      providerPublishTime: item.providerPublishTime instanceof Date
+        ? item.providerPublishTime.getTime()
+        : 0,
+      type: item.type ?? '',
+      thumbnail: item.thumbnail?.resolutions
+        ? {
+            resolutions: item.thumbnail.resolutions.map((resolution) => ({
+              url: resolution.url ?? '',
+              width: resolution.width ?? 0,
+              height: resolution.height ?? 0,
+              tag: resolution.tag ?? ''
+            }))
+          }
+        : undefined,
+      relatedTickers: item.relatedTickers ?? []
+    }));
 
-    if (!result.news) {
-      return { count: 0, news: [] };
-    }
-
-    const newsData = result.news as unknown;
-    if (typeof newsData === 'object' && newsData !== null && 'items' in newsData) {
-      const items = (newsData as { items: unknown[] }).items;
-      return {
-        count: items.length,
-        news: items.slice(0, count) as NewsItem[]
-      };
-    }
-
-    if (Array.isArray(newsData)) {
-      return {
-        count: newsData.length,
-        news: newsData.slice(0, count) as NewsItem[]
-      };
-    }
-
-    return { count: 0, news: [] };
+    return { count: news.length, news };
   } catch (error) {
     throw new YahooFinanceError(
       `Failed to fetch news for ${symbol}: ${error instanceof Error ? error.message : String(error)}`,

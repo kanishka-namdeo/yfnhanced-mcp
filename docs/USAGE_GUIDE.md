@@ -17,7 +17,7 @@ Practical guide to using Yahoo Finance MCP Server in your applications.
 
 ### Prerequisites
 
-- Node.js 18+ installed
+- Node.js 22.13+ installed
 - Claude Desktop (or MCP-compatible client)
 - Basic understanding of financial data concepts
 

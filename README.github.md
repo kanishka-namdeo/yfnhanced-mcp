@@ -6,7 +6,7 @@
   <a href="https://www.npmjs.com/package/yfnhanced-mcp"><img src="https://img.shields.io/npm/v/yfnhanced-mcp.svg?style=flat-square&color=22d3ee&labelColor=1b1630&logo=npm&logoColor=white" alt="npm version"></a>
   <a href="https://www.npmjs.com/package/yfnhanced-mcp"><img src="https://img.shields.io/npm/dm/yfnhanced-mcp.svg?style=flat-square&color=a79fc0&labelColor=1b1630" alt="npm downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-34d399?style=flat-square&labelColor=1b1630" alt="MIT license"></a>
-  <a href="https://github.com/kanishka-namdeo/yfnhanced-mcp/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/node-%3E%3D18-8b5cf6?style=flat-square&labelColor=1b1630" alt="Node 18 or newer"></a>
+  <a href="https://github.com/kanishka-namdeo/yfnhanced-mcp/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/node-%3E%3D22.13-8b5cf6?style=flat-square&labelColor=1b1630" alt="Node 22.13 or newer"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio-8b5cf6?style=flat-square&labelColor=1b1630&logo=modelcontextprotocol&logoColor=white" alt="Model Context Protocol over stdio"></a>
 </p>
 
@@ -64,7 +64,7 @@ npm run build
 npm start          # speaks JSON-RPC on stdio
 ```
 
-Requires Node 18 or newer.
+Requires Node 22.13 or newer.
 
 <details>
 <summary><strong>A note on the two binary names</strong></summary>

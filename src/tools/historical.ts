@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { HistoricalPriceResult, HistoricalPriceData } from '../types/yahoo-finance.js';
+import type { HistoricalPriceResult, HistoricalPriceData, HistoricalInterval } from '../types/yahoo-finance.js';
 import { YahooFinanceClient } from '../services/yahoo-finance.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
 import { InputValidator } from '../utils/security.js';
@@ -358,10 +358,10 @@ export class HistoricalTools {
     symbol: string,
     startDate: string,
     endDate: string | undefined,
-    interval: string,
+    interval: HistoricalInterval,
     maxRetries: number = 3
   ): Promise<{ success: boolean; data?: HistoricalPriceData[]; error?: string }> {
-    const intervals = [interval, '1d', '1wk'];
+    const intervals: HistoricalInterval[] = [...new Set<HistoricalInterval>([interval, '1d', '1wk'])];
 
     for (const retryInterval of intervals) {
       for (let attempt = 0; attempt < maxRetries; attempt++) {

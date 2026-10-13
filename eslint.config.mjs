@@ -12,12 +12,18 @@ export default [
     ]
   },
   {
+    // Every TypeScript file needs the TS parser; without it ESLint falls back to
+    // espree and reports syntax errors for tests and scripts that carry no rules.
+    files: ["**/*.ts"],
+    languageOptions: {
+      parser: tsparser
+    }
+  },
+  {
     files: ["src/**/*.ts"],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
-        ecmaVersion: 2022,
-        sourceType: "module",
         project: "./tsconfig.json"
       },
       globals: {

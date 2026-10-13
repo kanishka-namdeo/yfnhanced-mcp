@@ -1,11 +1,10 @@
-import YahooFinance from 'yahoo-finance2';
+import { yahooFinance } from '../services/yahoo-finance.js';
 import { HoldersInputSchema, HoldersOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
 import type { Holder, InstitutionalHolder, FundHolder, InsiderHolder, HolderResult } from '../types/yahoo-finance.js';
 import { InputValidator } from '../utils/security.js';
 
-const yahooFinance = new YahooFinance();
 const HOLDERS_CACHE_TTL = 3600000;
 
 class HoldersToolCache {

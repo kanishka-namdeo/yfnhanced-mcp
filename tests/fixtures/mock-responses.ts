@@ -72,6 +72,7 @@ export const mockQuoteResponse = {
       symbol: 'AAPL'
     }
   }
+]
   }
 };
 

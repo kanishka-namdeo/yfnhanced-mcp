@@ -1,5 +1,5 @@
 # Build stage
-FROM node:18-alpine AS builder
+FROM node:22-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -8,8 +8,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
+# Install dependencies (dev dependencies are required for tsc in the build step below)
+RUN npm ci && \
     npm cache clean --force
 
 # Copy source code
@@ -18,8 +18,11 @@ COPY src ./src
 # Build TypeScript
 RUN npm run build
 
+# Drop build-only dependencies before they are copied into the runtime image
+RUN npm prune --omit=dev
+
 # Production stage
-FROM node:18-alpine AS production
+FROM node:22-alpine AS production
 
 # Install dumb-init for proper signal handling
 RUN apk add --no-cache dumb-init

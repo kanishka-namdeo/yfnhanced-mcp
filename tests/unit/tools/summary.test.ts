@@ -9,7 +9,21 @@ describe('SummaryTools', () => {
     mockClient = {
       getSummaryProfile: jest.fn(),
       getTrending: jest.fn(),
-      screener: jest.fn()
+      screener: jest.fn(),
+      getCryptoQuote: jest.fn((symbols: string[]) => {
+        const record: Record<string, unknown> = {};
+        for (const symbol of symbols) {
+          record[symbol] = { symbol, regularMarketPrice: 100, currency: 'USD' };
+        }
+        return Promise.resolve(record);
+      }),
+      getForexQuote: jest.fn((pairs: string[]) => {
+        const record: Record<string, unknown> = {};
+        for (const pair of pairs) {
+          record[pair] = { symbol: pair, regularMarketPrice: 1, currency: 'USD' };
+        }
+        return Promise.resolve(record);
+      })
     } as unknown as jest.Mocked<YahooFinanceClient>;
 
     const config = {
@@ -220,10 +234,14 @@ describe('SummaryTools', () => {
     });
 
     test('should handle errors for individual symbols', async () => {
+      mockClient.getCryptoQuote.mockImplementation((symbols: string[]) =>
+        Promise.reject(new Error(`No crypto data for ${symbols[0]}`)));
+
       const result = await tools.getCryptoQuote({ symbols: ['BTC-USD', 'INVALID'] });
 
-      expect(result.summary.totalReturned).toBe(2);
-      expect(result.summary.errors).toBeDefined();
+      expect(result.summary.totalReturned).toBe(0);
+      expect(result.summary.errors).toHaveLength(2);
+      expect(result.summary.errors.map((entry) => entry.symbol)).toEqual(['BTC-USD', 'INVALID']);
     });
 
     test('should respect currency parameter', async () => {
@@ -245,10 +263,13 @@ describe('SummaryTools', () => {
     });
 
     test('should handle errors for individual pairs', async () => {
+      mockClient.getForexQuote.mockImplementation(() =>
+        Promise.reject(new Error('No forex data')));
+
       const result = await tools.getForexQuote({ pairs: ['EURUSD', 'INVALID'] });
 
-      expect(result.summary.totalReturned).toBe(2);
-      expect(result.summary.errors).toBeDefined();
+      expect(result.summary.totalReturned).toBe(0);
+      expect(result.summary.errors).toHaveLength(2);
     });
   });
 

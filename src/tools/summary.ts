@@ -314,58 +314,18 @@ class SummaryTools {
   }
 
   private async fetchCryptoQuote(symbol: string, currency?: string): Promise<CryptoQuoteResult> {
-    const cryptoResult: CryptoQuoteResult = {
-      regularMarketPrice: 0,
-      regularMarketChange: 0,
-      regularMarketChangePercent: 0,
-      regularMarketPreviousClose: 0,
-      regularMarketOpen: 0,
-      regularMarketDayHigh: 0,
-      regularMarketDayLow: 0,
-      regularMarketVolume: 0,
-      marketCap: 0,
-      circulatingSupply: 0,
-      totalVolume24Hr: 0,
-      volumeAllCurrencies: 0,
-      fromCurrency: symbol.split('-')[0] || symbol,
-      toCurrency: currency || 'USD',
-      lastMarket: 'Yahoo Finance',
-      coinImageUrl: '',
-      quoteSourceName: 'Yahoo Finance',
-      quoteType: 'CRYPTOCURRENCY',
-      symbol,
-      shortName: symbol,
-      longName: symbol
-    };
-
-    return cryptoResult;
+    const pair = currency !== undefined && !symbol.includes('-') ? `${symbol}-${currency}` : symbol;
+    const results = await this.client.getCryptoQuote([pair]);
+    return results[pair];
   }
 
   private async fetchForexQuote(pair: string): Promise<ForexQuoteResult> {
-    const forexResult: ForexQuoteResult = {
-      regularMarketPrice: 1,
-      regularMarketChange: 0,
-      regularMarketChangePercent: 0,
-      regularMarketPreviousClose: 1,
-      regularMarketOpen: 1,
-      regularMarketDayHigh: 1,
-      regularMarketDayLow: 1,
-      regularMarketVolume: 0,
-      fromCurrency: pair.substring(0, 3),
-      toCurrency: pair.substring(3, 6),
-      lastMarket: 'Yahoo Finance',
-      quoteSourceName: 'Yahoo Finance',
-      quoteType: 'CURRENCY',
-      symbol: pair,
-      shortName: pair,
-      longName: pair
-    };
-
-    return forexResult;
+    const results = await this.client.getForexQuote([pair]);
+    return results[pair];
   }
 
   private async fetchTrending(region: string, limit?: number): Promise<TrendingResult> {
-    const result = await this.client.getTrending();
+    const result = await this.client.getTrending({ region });
 
     if (limit && result.quotes.length > limit) {
       result.quotes = result.quotes.slice(0, limit);

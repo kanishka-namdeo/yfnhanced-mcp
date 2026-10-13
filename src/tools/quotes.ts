@@ -427,7 +427,7 @@ export class QuoteTools {
       flat['exchangeName'] = quote.meta.exchangeName;
       flat['instrumentType'] = quote.meta.instrumentType;
       flat['regularMarketTime'] = quote.meta.regularMarketTime;
-      flat['timezone'] = quote.meta.timezone;
+      flat['timezone'] = quote.meta.exchangeTimezoneName;
     }
 
     return flat;
@@ -470,7 +470,7 @@ export class QuoteTools {
 
   private extractDataAge(quote: QuoteResult): number {
     const timestamp = quote.meta?.regularMarketTime;
-    if (timestamp !== undefined && timestamp > 0) {
+    if (typeof timestamp === 'number' && timestamp > 0) {
       return Date.now() - timestamp;
     }
     return 0;

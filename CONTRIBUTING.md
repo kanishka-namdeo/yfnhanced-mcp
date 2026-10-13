@@ -6,7 +6,7 @@ Thanks for helping make it better.
 
 ## Development setup
 
-Requires Node.js >= 18 and npm >= 9.
+Requires Node.js >= 22.13 and npm >= 10.
 
 ```bash
 git clone https://github.com/kanishka-namdeo/yfnhanced-mcp.git
