@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches:
+      - master
       - main
       - develop
   pull_request:
     branches:
+      - master
       - main
       - develop
 
@@ -34,6 +36,9 @@ jobs:
 
       - name: Run type checking
         run: npm run typecheck
+
+      - name: Build package
+        run: npm run build
 
       - name: Run tests
         run: npm test

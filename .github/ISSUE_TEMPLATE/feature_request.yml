@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest a new capability or an improvement to yfnhanced-mcp.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. This project wraps `yahoo-finance2` as an
+        MCP server, so the most useful requests are concrete: a specific tool, field,
+        resilience behavior, or config knob. Please keep it focused.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I have searched the existing issues and this is not a duplicate.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this solve, or what gap does it fill? Who benefits?
+      placeholder: e.g. As a user analyzing options, I want ... so that ...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: >-
+        Describe the behavior you want. If it is a new tool, give a proposed
+        snake_case name, its inputs, and what it should return.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you considered, and why this one is better.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the server does this touch?
+      options:
+        - New tool / data
+        - Resilience (cache, circuit breaker, rate limiter, retry)
+        - Security / validation
+        - Configuration
+        - Documentation
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, examples, or screenshots that help explain the request.
+    validations:
+      required: false

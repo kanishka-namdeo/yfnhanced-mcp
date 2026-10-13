@@ -1,0 +1,116 @@
+name: Bug report
+description: Report something that is broken or behaving incorrectly in yfnhanced-mcp.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        > **Note — this server calls a live third-party API.** `yfnhanced-mcp` fetches
+        > data from Yahoo Finance in real time. Yahoo rate-limits requests and returns
+        > **HTTP 429** under load, and endpoints occasionally time out or change shape.
+        > Many "failures" are transient. **Please retry the failing call a few times
+        > (with a short wait) before filing**, and only report it here if it reproduces
+        > consistently. The built-in retry, circuit breaker, and rate limiter already
+        > absorb some of this; a report should describe behavior that persists.
+
+        Fill in every field below. Reports missing the version, environment, tool, or
+        exact error output are hard to act on and may be closed.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I have searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I retried the failing call and it reproduces consistently (not a transient Yahoo 429/timeout).
+          required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Package version
+      description: The version of `yfnhanced-mcp` you are running (`npm ls yfnhanced-mcp`, or the tag you built from).
+      placeholder: e.g. 1.0.1
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`. Must be >= 18.
+      placeholder: e.g. 20.11.1
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Ubuntu 22.04, Windows 11, macOS 14.3
+    validations:
+      required: true
+  - type: dropdown
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: Which client is connecting to this server?
+      options:
+        - Claude Desktop
+        - Cursor
+        - Cline
+        - Custom SDK
+    validations:
+      required: true
+  - type: input
+    id: client-details
+    attributes:
+      label: Client details
+      description: For "Custom SDK", name the SDK/library and version. Otherwise, the client version.
+      placeholder: e.g. @modelcontextprotocol/sdk 1.25.2, or Claude Desktop 0.9.x
+    validations:
+      required: false
+  - type: input
+    id: tool-name
+    attributes:
+      label: Tool that failed
+      description: The MCP tool name (snake_case) that returned the error.
+      placeholder: e.g. get_quote, get_options, get_news
+    validations:
+      required: true
+  - type: input
+    id: ticker-symbol
+    attributes:
+      label: Ticker symbol(s)
+      description: The symbol(s) passed to the tool.
+      placeholder: e.g. AAPL, or BTC-USD, or AAPL,MSFT
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration used
+      description: >-
+        The config file (JSON/YAML) or `YF_MCP_*` environment variables in effect.
+        Redact anything sensitive. If you used defaults, say "defaults".
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Exact error output
+      description: >-
+        Paste the exact error, including any `YF_ERR_*` code, `suggestedAction`, and
+        stack trace. Also include the relevant `console.error` / server log lines.
+        Do not paraphrase.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or the exact tool arguments that trigger the bug.
+    validations:
+      required: false

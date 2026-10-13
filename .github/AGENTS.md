@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Two workflows: `workflows/ci.yml` validating changes, `workflows/release.yml` publishing the npm package from a version tag.
+Two workflows — `workflows/ci.yml` validating changes, `workflows/release.yml` publishing the npm package from a version tag — plus the community health surface: `ISSUE_TEMPLATE/` issue forms, `PULL_REQUEST_TEMPLATE.md`, `dependabot.yml`, and `AGENTS.md` itself. `LICENSE`, `CONTRIBUTING.md`, and `SECURITY.md` live at the repository root and are owned by the root doc.
 
 ## Ownership
 
@@ -11,14 +11,15 @@ Two workflows: `workflows/ci.yml` validating changes, `workflows/release.yml` pu
 
 ## Local Contracts
 
-- `ci.yml` triggers on push and pull_request to `main` and `develop` only (`:3-11`). This repository's default and working branch is `master`, so no push or PR to it starts any workflow. Treat CI as not running until the branch names in that filter match the branches in use.
+- `ci.yml` triggers on push and pull_request to `master`, `main`, and `develop`. `master` was added on 2026-10-13; until then the filter named only branches this repository does not use, so no push or PR ever started a workflow and no status badge could render.
 - Job `test` (`:14-49`) runs on `ubuntu-latest` over a Node matrix of `18.x` and `20.x` (`:18`) in this order: `actions/checkout@v4`, `actions/setup-node@v4`, `npm ci` (`:30`), `npm run lint` (`:33`), `npm run typecheck` (`:36`), `npm test` (`:39`), `npm run test:coverage` (`:42`), then `codecov/codecov-action@v4` (`:44-49`) uploading `./coverage/lcov.info` with `fail_ci_if_error: false`, so a missing token or failed upload never blocks.
 - Job `build` (`:51-75`) is Node `18` only (`:61`), runs `npm run build`, and asserts `dist` exists (`:69-75`). It is a separate job, not a step in `test`.
-- Effective gates: lint, typecheck, the full Jest suite, and the 85% coverage threshold inside `test:coverage`. `npm run lint` does not pass `--max-warnings`, so the `complexity`, `max-lines-per-function`, `max-depth`, and `no-console` warnings cannot fail a run.
-- Ordering defect: `ci.yml` never runs `npm run build` before `npm test`, and the four `tests/e2e/` plus six `tests/chaos/` suites reject with `Server build not found` when `dist/index.js` is absent. The `build` job runs concurrently rather than as a prerequisite.
-- `release.yml` triggers only on a tag push matching `v*` (`:3-6`) and requests `contents: read` plus `id-token: write` (`:8-10`). Sequence: checkout with `fetch-depth: 0` (`:18-20`), Node `18` with `registry-url` (`:22-26`), `npm ci`, `lint`, `typecheck`, `npm test`, `npm run build` (`:41`), `npm run readme:npm` (`:44`), `npm publish --provenance` with `NODE_AUTH_TOKEN` (`:46-49`), `actions/create-release@v1` (`:51-59`), `npm run readme:github` (`:62`), then an inline `git add`/`git commit`/`git push` of `README.md` (`:64-70`).
-- Release blockers visible from the config: both README steps call the Windows `copy` command (`package.json:29-30`) on `ubuntu-latest`; the final `git push` has no `contents: write` permission and runs from the detached tag checkout; `npm test` precedes `npm run build`, inheriting the same spawn-order defect as `ci.yml`.
-- `actions/create-release@v1` is a third-party composite action pinned by tag, not a GitHub-maintained action.
+- Effective gates: lint, typecheck, the full Jest suite, and the 85% coverage threshold inside `test:coverage`. `npm run lint` does not pass `--max-warnings`, so the `complexity`, `max-lines-per-function`, `max-depth`, and `no-console` warnings cannot fail a run. The real lint and test baseline in `src/` and `tests/` is red, so the first workflow run on `master` is expected to fail; the README carries no CI shield until that baseline is green.
+- Build-before-test is fixed: the `test` job runs `npm run build` after typecheck and before `npm test`, because the four `tests/e2e/` plus six `tests/chaos/` suites spawn `dist/index.js` and reject with `Server build not found` when it is absent. The standalone `build` job remains as a separate Node-18 dist assertion.
+- `release.yml` triggers only on a tag push matching `v*` and requests `contents: write` plus `id-token: write`. Sequence: checkout with `fetch-depth: 0`, Node `18` with `registry-url`, `npm ci`, `lint`, `typecheck`, `npm run build`, `npm test`, `npm run readme:npm`, `npm publish --provenance` with `NODE_AUTH_TOKEN`, `gh release create` in a `run:` step, then `npm run readme:github`.
+- Release blockers fixed 2026-10-13: the README steps no longer call the Windows `copy` command on `ubuntu-latest`, the build precedes the tests, and the post-publish `git add`/`commit`/`push` of `README.md` was deleted — it lacked `contents: write`, ran from a detached tag checkout so it could never have succeeded, and the runner is discarded regardless.
+- `gh` is preinstalled on GitHub runners, so the release step adds no third-party action dependency.
+- Publishing requires a `version` bump first: npm already serves 1.0.1 while `package.json` says 1.0.0, so a `v1.0.0` tag would fail at `npm publish`.
 
 ## Work Guidance
 

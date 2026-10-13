@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Application dependencies (package.json / package-lock.json)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "master"
+    open-pull-requests-limit: 10
+    groups:
+      # Bundle dev-dependency minor/patch bumps into a single PR to reduce noise.
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by the CI and release workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "master"
+    open-pull-requests-limit: 5

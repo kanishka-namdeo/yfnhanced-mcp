@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -34,11 +34,11 @@ jobs:
       - name: Run type checking
         run: npm run typecheck
 
-      - name: Run tests
-        run: npm test
-
       - name: Build package
         run: npm run build
+
+      - name: Run tests
+        run: npm test
 
       - name: Prepare README for npm
         run: npm run readme:npm
@@ -49,22 +49,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
-        uses: actions/create-release@v1
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "Release $GITHUB_REF_NAME"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore README for GitHub
         run: npm run readme:github
-
-      - name: Commit README restore
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "chore: restore GitHub README after release" || exit 0
-          git push
