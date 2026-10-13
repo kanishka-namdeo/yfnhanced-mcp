@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { HistoricalPriceResult, HistoricalPriceData } from '../types/yahoo-finance.js';
 import { YahooFinanceClient } from '../services/yahoo-finance.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
@@ -33,6 +31,12 @@ type MultiHistoricalResult = {
   data?: HistoricalPriceWithFlags[];
   meta?: HistoricalMeta;
   error?: string;
+};
+
+type HistoricalSingleResult = {
+  symbol: string;
+  data: HistoricalPriceWithFlags[];
+  meta: HistoricalMeta;
 };
 
 const DEFAULT_CACHE_TTL_MS = 3600000;
@@ -136,24 +140,20 @@ class HistoricalDataValidator {
 }
 
 export class HistoricalTools {
-  private server: Server;
   private client: YahooFinanceClient;
   private qualityReporter: DataQualityReporter;
   private validator: HistoricalDataValidator;
   private cache: Map<string, { data: HistoricalPriceWithFlags[]; timestamp: number }>;
 
-  constructor(server: Server, client: YahooFinanceClient, qualityReporter: DataQualityReporter) {
-    this.server = server;
+  constructor(client: YahooFinanceClient, qualityReporter: DataQualityReporter) {
     this.client = client;
     this.qualityReporter = qualityReporter;
     this.validator = new HistoricalDataValidator();
     this.cache = new Map();
-    this.registerTools();
   }
 
-  private registerTools(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
+  getToolDefinitions(): unknown[] {
+    return [
         {
           name: 'get_historical_prices',
           description: 'Get historical price data for a stock symbol',
@@ -217,25 +217,10 @@ export class HistoricalTools {
             required: ['symbols', 'startDate']
           }
         }
-      ]
-    }));
-
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-
-      if (name === 'get_historical_prices') {
-        return this.handleGetHistoricalPrices(args);
-      }
-
-      if (name === 'get_historical_prices_multi') {
-        return this.handleGetHistoricalPricesMulti(args);
-      }
-
-      throw new Error(`Unknown tool: ${name}`);
-    });
+    ];
   }
 
-  private async handleGetHistoricalPrices(args: unknown) {
+  async getHistoricalPrices(args: unknown): Promise<HistoricalSingleResult> {
     const input = z.object({
       symbol: z.string().min(1).max(20),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -260,22 +245,15 @@ export class HistoricalTools {
       );
 
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              symbol,
-              data: cached.data,
-              meta: {
-                fromCache: true,
-                dataAge,
-                completenessScore,
-                warnings,
-                integrityFlags: []
-              }
-            }, null, 2)
-          }
-        ]
+        symbol,
+        data: cached.data,
+        meta: {
+          fromCache: true,
+          dataAge,
+          completenessScore,
+          warnings,
+          integrityFlags: []
+        }
       };
     }
 
@@ -285,22 +263,15 @@ export class HistoricalTools {
       if (cached) {
         const dataAge = now - cached.timestamp;
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                symbol,
-                data: cached.data,
-                meta: {
-                  fromCache: true,
-                  dataAge,
-                  completenessScore: this.validator.calculateCompletenessScore(cached.data),
-                  warnings: ['Using stale cached data due to fetch failure'],
-                  integrityFlags: ['stale_data']
-                }
-              }, null, 2)
-            }
-          ]
+          symbol,
+          data: cached.data,
+          meta: {
+            fromCache: true,
+            dataAge,
+            completenessScore: this.validator.calculateCompletenessScore(cached.data),
+            warnings: ['Using stale cached data due to fetch failure'],
+            integrityFlags: ['stale_data']
+          }
         };
       }
 
@@ -325,32 +296,25 @@ export class HistoricalTools {
     });
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            symbol,
-            data: processedData,
-            meta: {
-              fromCache: false,
-              dataAge,
-              completenessScore,
-              warnings,
-              integrityFlags: processedData.flatMap(item => {
-                const flags: string[] = [];
-                if (item.isGap) {flags.push('gap_detected');}
-                if (item.isSplit) {flags.push('split_detected');}
-                if (item.hasNulls) {flags.push('null_values');}
-                return flags;
-              })
-            }
-          }, null, 2)
-        }
-      ]
+      symbol,
+      data: processedData,
+      meta: {
+        fromCache: false,
+        dataAge,
+        completenessScore,
+        warnings,
+        integrityFlags: processedData.flatMap(item => {
+          const flags: string[] = [];
+          if (item.isGap) {flags.push('gap_detected');}
+          if (item.isSplit) {flags.push('split_detected');}
+          if (item.hasNulls) {flags.push('null_values');}
+          return flags;
+        })
+      }
     };
   }
 
-  private async handleGetHistoricalPricesMulti(args: unknown) {
+  async getHistoricalPricesMulti(args: unknown): Promise<Record<string, MultiHistoricalResult>> {
     const input = z.object({
       symbols: z.array(z.string().min(1).max(20)).min(1).max(50),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -363,7 +327,7 @@ export class HistoricalTools {
 
     for (const symbol of symbols) {
       try {
-        const singleResult = await this.handleGetHistoricalPrices({
+        const singleResult = await this.getHistoricalPrices({
           symbol,
           startDate,
           endDate,
@@ -371,12 +335,11 @@ export class HistoricalTools {
           validateData: true
         });
 
-        const parsed = JSON.parse(singleResult.content[0].text);
         results.set(symbol, {
           symbol,
           status: 'success',
-          data: parsed.data,
-          meta: parsed.meta
+          data: singleResult.data,
+          meta: singleResult.meta
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -388,14 +351,7 @@ export class HistoricalTools {
       }
     }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(Object.fromEntries(results), null, 2)
-        }
-      ]
-    };
+    return Object.fromEntries(results);
   }
 
   private async fetchWithRetry(

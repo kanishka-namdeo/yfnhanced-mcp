@@ -212,6 +212,7 @@ class MCPServer {
     const quoteTools = new QuoteTools(this.yahooClient, this.qualityReporter);
     const earningsTools = new EarningsTools(this.yahooClient);
     const analysisTools = new AnalysisTools(this.yahooClient);
+    const historicalTools = new HistoricalTools(this.yahooClient, this.qualityReporter);
     const summaryTools = new SummaryTools(this.yahooClient, {
       rateLimit: {
         strategy: 'token-bucket',
@@ -272,6 +273,8 @@ class MCPServer {
 
     this.toolHandlers.set('get_quote', async (args) => quoteTools.getQuote(args as { symbols: string[]; fields?: string[]; forceRefresh?: boolean; timeout?: number }));
     this.toolHandlers.set('get_quote_summary', async (args) => quoteTools.getQuoteSummary(args as { symbol: string; modules?: string[]; retryOnFailure?: boolean }));
+    this.toolHandlers.set('get_historical_prices', async (args) => historicalTools.getHistoricalPrices(args as Record<string, unknown>));
+    this.toolHandlers.set('get_historical_prices_multi', async (args) => historicalTools.getHistoricalPricesMulti(args as Record<string, unknown>));
     this.toolHandlers.set('get_earnings', async (args) => earningsTools.getEarnings(args as Record<string, unknown>));
     this.toolHandlers.set('get_analysis', async (args) => analysisTools.getAnalysis(args as Record<string, unknown>));
     this.toolHandlers.set('get_major_holders', async (args) => getMajorHoldersTool(args as Record<string, unknown>));
@@ -548,7 +551,8 @@ class MCPServer {
             required: ['symbol']
           }
         },
-        ...summaryTools.getTools()
+        ...summaryTools.getTools(),
+        ...historicalTools.getToolDefinitions()
       ];
 
       return { tools: toolDefinitions };

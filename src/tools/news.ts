@@ -310,7 +310,7 @@ export async function getCompanyNewsTool(
 export function getNewsToolDefinitions() {
   return [
     {
-      name: 'get_company_news',
+      name: 'get_news',
       description: 'Retrieve recent news articles for a company including title, publisher, link, and related tickers. Handles cases where news API fails silently and reports data freshness.',
       inputSchema: {
         type: 'object',

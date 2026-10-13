@@ -14,7 +14,7 @@ TypeScript implementation of the Yahoo Finance MCP server: process lifecycle, MC
 - `src/schemas/` owns zod input/output contracts shared by tools.
 - `src/utils/` owns stateless validators, error classification, data-quality scoring, formatting.
 - `src/types/` owns type-only declarations.
-- `src/prompts/` owns nothing operationally: `financialPrompts`, `getFinancialPrompt`, `listFinancialPrompts` are exported but unreferenced, because `src/index.ts:663-750` hardcodes its six prompts inline. Treat this folder as dead until someone wires it.
+- `src/prompts/` no longer exists. It was deleted on 2026-10-13 together with its unreferenced 988-line module, because `src/index.ts` hardcodes its six prompts inline. If prompts ever grow past those six, that is the reason to reintroduce the folder.
 
 ## Local Contracts
 
