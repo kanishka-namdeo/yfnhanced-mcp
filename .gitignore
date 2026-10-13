@@ -86,7 +86,7 @@ Desktop.ini
 .turbo/
 
 # Agent and prompt files
-AGENTS.md
+# AGENTS.md files are the tracked DOX tree (see root AGENTS.md); only master-prompt.md stays out of version control
 master-prompt.md
 
 # Trae IDE folder
