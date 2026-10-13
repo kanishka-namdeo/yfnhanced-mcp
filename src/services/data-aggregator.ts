@@ -26,7 +26,7 @@ interface SourcePriority {
   fallbackEnabled: boolean;
 }
 
-type SourceData = Record<string, Record<string, unknown>>;
+type SourceData = Record<string, Record<string, unknown> | undefined>;
 
 export class DataAggregator {
   private yahooClient: YahooFinanceClient;
@@ -54,8 +54,7 @@ export class DataAggregator {
     this.qualityReporter = reporter;
   }
 
-  async aggregateQuoteData(symbol: string, sources: string[]): Promise<QuoteResult> {
-    const priority = this.getSourcePriority(sources);
+  async aggregateQuoteData(symbol: string, _sources: string[]): Promise<QuoteResult> {
     const sourceData: SourceData = {};
 
     try {
@@ -71,8 +70,8 @@ export class DataAggregator {
       sourceData.primary = primaryData as Record<string, unknown>;
       this.qualityReporter.reportAggregationSource(symbol, 'quote', 'primary');
     } catch (error) {
-      const cachedData = await this.tryCachedData(symbol);
-      if (cachedData) {
+      const cachedData = this.tryCachedData(symbol);
+      if (typeof cachedData === 'object' && cachedData !== null) {
         sourceData.cached = cachedData as Record<string, unknown>;
         this.qualityReporter.reportAggregationSource(symbol, 'quote', 'cached');
       } else {
@@ -80,7 +79,7 @@ export class DataAggregator {
       }
     }
 
-    const aggregated = this.completeMissingFields(sourceData.primary || sourceData.cached || {}, sourceData);
+    const aggregated = this.completeMissingFields(sourceData.primary ?? sourceData.cached ?? {}, sourceData);
     const quoteResult = this.transformToQuoteResult(aggregated);
 
     this.validateAndReportQuality(symbol, 'quote', quoteResult);
@@ -88,7 +87,7 @@ export class DataAggregator {
     return quoteResult;
   }
 
-  async aggregateHistoricalData(symbol: string, sources: string[]): Promise<HistoricalPriceResult> {
+  async aggregateHistoricalData(symbol: string, _sources: string[]): Promise<HistoricalPriceResult> {
     const sourceData: SourceData = {};
 
     try {
@@ -104,8 +103,8 @@ export class DataAggregator {
       sourceData.primary = primaryData as Record<string, unknown>;
       this.qualityReporter.reportAggregationSource(symbol, 'historical', 'primary');
     } catch (error) {
-      const cachedData = await this.tryCachedData(symbol);
-      if (cachedData) {
+      const cachedData = this.tryCachedData(symbol);
+      if (typeof cachedData === 'object' && cachedData !== null) {
         sourceData.cached = cachedData as Record<string, unknown>;
         this.qualityReporter.reportAggregationSource(symbol, 'historical', 'cached');
       } else {
@@ -113,7 +112,7 @@ export class DataAggregator {
       }
     }
 
-    const aggregated = this.completeMissingFields(sourceData.primary || sourceData.cached || {}, sourceData);
+    const aggregated = this.completeMissingFields(sourceData.primary ?? sourceData.cached ?? {}, sourceData);
     const historicalResult = aggregated as HistoricalPriceResult;
 
     this.validateAndReportQuality(symbol, 'historical', historicalResult);
@@ -121,7 +120,7 @@ export class DataAggregator {
     return historicalResult;
   }
 
-  async aggregateFinancialData(symbol: string, sources: string[]): Promise<FinancialStatementResult> {
+  async aggregateFinancialData(symbol: string, _sources: string[]): Promise<FinancialStatementResult> {
     const sourceData: SourceData = {};
 
     try {
@@ -137,8 +136,8 @@ export class DataAggregator {
       sourceData.primary = primaryData as Record<string, unknown>;
       this.qualityReporter.reportAggregationSource(symbol, 'financial', 'primary');
     } catch (error) {
-      const cachedData = await this.tryCachedData(symbol);
-      if (cachedData) {
+      const cachedData = this.tryCachedData(symbol);
+      if (typeof cachedData === 'object' && cachedData !== null) {
         sourceData.cached = cachedData as Record<string, unknown>;
         this.qualityReporter.reportAggregationSource(symbol, 'financial', 'cached');
       } else {
@@ -146,7 +145,7 @@ export class DataAggregator {
       }
     }
 
-    const aggregated = this.completeMissingFields(sourceData.primary || sourceData.cached || {}, sourceData);
+    const aggregated = this.completeMissingFields(sourceData.primary ?? sourceData.cached ?? {}, sourceData);
     const financialResult = this.transformToFinancialResult(aggregated);
 
     this.validateAndReportQuality(symbol, 'financial', financialResult);
@@ -207,12 +206,13 @@ export class DataAggregator {
 
   selectBestSource(sources: SourceData, priority: string[]): Record<string, unknown> {
     for (const sourceName of priority) {
-      if (sources[sourceName]) {
-        return sources[sourceName];
+      const candidate = sources[sourceName];
+      if (candidate !== undefined) {
+        return candidate;
       }
     }
 
-    return Object.values(sources)[0] || {};
+    return Object.values(sources)[0] ?? {};
   }
 
   private getSourcePriority(sources: string[]): SourcePriority {
@@ -252,7 +252,7 @@ export class DataAggregator {
       for (const fallbackFn of fallbackFns) {
         try {
           return await this.tryWithRetry(symbol, fallbackFn, 2);
-        } catch (fallbackError) {
+        } catch (_fallbackError) {
           continue;
         }
       }
@@ -282,7 +282,7 @@ export class DataAggregator {
     throw lastError;
   }
 
-  async tryCachedData(symbol: string): Promise<unknown | null> {
+  tryCachedData(symbol: string): unknown | null {
     if (!this.config.fallbackToCache) {
       return null;
     }
@@ -306,10 +306,13 @@ export class DataAggregator {
     const missingFields = this.identifyMissingFields(result);
 
     for (const field of missingFields) {
-      for (const [sourceName, sourceData] of Object.entries(sources)) {
-        if (sourceData[field] !== undefined && sourceData[field] !== null) {
-          result[field] = sourceData[field];
-          break;
+      for (const [, sourceData] of Object.entries(sources)) {
+        if (sourceData !== undefined) {
+          const value = sourceData[field];
+          if (value !== undefined && value !== null) {
+            result[field] = value;
+            break;
+          }
         }
       }
     }
@@ -440,7 +443,7 @@ export class DataAggregator {
       currency: this.extractString(data, 'currency'),
       marketState: this.extractString(data, 'marketState'),
       quoteType: this.extractString(data, 'quoteType'),
-      symbol: this.extractString(data, 'symbol') || '',
+      symbol: this.extractString(data, 'symbol') ?? '',
       shortName: this.extractString(data, 'shortName'),
       longName: this.extractString(data, 'longName'),
       exchange: this.extractString(data, 'exchange'),
@@ -479,7 +482,7 @@ export class DataAggregator {
     };
   }
 
-  private transformToFinancialResult(data: Record<string, unknown>): FinancialStatementResult {
+  private transformToFinancialResult(_data: Record<string, unknown>): FinancialStatementResult {
     return {
       incomeStatementHistory: {
         maxAge: 0,
@@ -524,7 +527,7 @@ export class DataAggregator {
       return isNaN(parsed) ? null : parsed;
     }
     if (typeof value === 'object' && value !== null && 'raw' in value) {
-      const raw = (value as { raw: unknown }).raw;
+      const raw = value.raw;
       return typeof raw === 'number' ? raw : null;
     }
     return null;

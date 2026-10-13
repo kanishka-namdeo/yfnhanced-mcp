@@ -18,6 +18,10 @@ export default {
     ]
   },
   roots: ['<rootDir>/src', '<rootDir>/tests'],
+  // Tests whose describe title carries LIVE_MARKER call Yahoo Finance and are excluded from
+  // `npm test`; `npm run test:live` (jest.live.config.js) runs exactly them. The marker string is
+  // the contract — a live case that loses it from its name silently joins the CI gate.
+  testNamePattern: '^(?!.*live market data)',
   testMatch: [
     '**/__tests__/**/*.ts',
     '**/?(*.)+(spec|test).ts',

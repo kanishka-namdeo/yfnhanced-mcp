@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 const MAX_SYMBOL_LENGTH = 20;
 const MIN_SYMBOL_LENGTH = 1;
 const ALLOWED_SYMBOL_CHARS = /^[A-Z0-9\.\-\^]+$/;
@@ -197,7 +195,7 @@ export class InputValidator {
       } else if (typeof value === 'boolean') {
         sanitized[typedKey] = value as T[keyof T];
       } else if (Array.isArray(value)) {
-        sanitized[typedKey] = value.map(item => 
+        sanitized[typedKey] = value.map((item: unknown) => 
           typeof item === 'string' ? this.sanitizeString(item) : item
         ) as T[keyof T];
       }
@@ -334,9 +332,9 @@ export class DataSanitizer {
       } else if (typeof value === 'boolean') {
         sanitized[key] = value;
       } else if (Array.isArray(value)) {
-        sanitized[key] = value.map(item => 
+        sanitized[key] = value.map((item: unknown) => 
           typeof item === 'string' ? InputValidator.sanitizeString(item) : item
-        ) as unknown[];
+        );
       } else if (typeof value === 'object' && value !== null) {
         sanitized[key] = this.sanitizeQuoteData(value as Record<string, unknown>);
       }

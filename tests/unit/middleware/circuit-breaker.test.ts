@@ -284,3 +284,97 @@ describe('CircuitBreakerOpenError', () => {
     expect(error.code).toBe('YF_ERR_CIRCUIT_OPEN');
   });
 });
+
+// Residual branches: the constructor's own defaults (:46-62) were never exercised because every
+// test passes a full config, and the "still below threshold" legs of the HALF_OPEN counters
+// (:104, :117) were stepped over by tests that always run to the transition.
+describe('CircuitBreaker constructor defaults and sub-threshold legs', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('a no-argument construction takes the inline 5 / 3 / 60000 / 60000 defaults', () => {
+    const bare = new CircuitBreaker();
+
+    expect(bare.getConfig()).toEqual({
+      failureThreshold: 5,
+      successThreshold: 3,
+      timeoutMs: 60000,
+      monitoringWindowMs: 60000,
+      fallback: undefined,
+      onOpen: undefined,
+      onHalfOpen: undefined,
+      onClose: undefined
+    });
+    expect(bare.getState()).toBe('CLOSED');
+  });
+
+  test('DEFECT: zero-valued config fields fall through `||` to the inline defaults, not to 0', () => {
+    const zeroed = new CircuitBreaker({
+      errorThresholdPercentage: 0,
+      halfOpenMaxAttempts: 0,
+      resetTimeoutMs: 0,
+      rollingCountTimeoutMs: 0
+    });
+
+    expect(zeroed.getConfig().failureThreshold).toBe(5);
+    expect(zeroed.getConfig().successThreshold).toBe(3);
+    expect(zeroed.getConfig().timeoutMs).toBe(60000);
+    expect(zeroed.getConfig().monitoringWindowMs).toBe(60000);
+  });
+
+  test('the inline 5-failure threshold is what trips a bare breaker', async () => {
+    const bare = new CircuitBreaker();
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await bare.execute(() => Promise.reject(new Error('failure'))).catch(() => undefined);
+      expect(bare.getState()).toBe('CLOSED');
+    }
+
+    await bare.execute(() => Promise.reject(new Error('failure'))).catch(() => undefined);
+    expect(bare.getState()).toBe('OPEN');
+    await expect(bare.execute(jest.fn().mockResolvedValue('x'))).rejects.toBeInstanceOf(
+      CircuitBreakerOpenError
+    );
+  });
+
+  test('a single HALF_OPEN success is below successThreshold, so the breaker waits for the third', async () => {
+    const breaker = new CircuitBreaker({
+      errorThresholdPercentage: 1,
+      halfOpenMaxAttempts: 3,
+      resetTimeoutMs: 60000,
+      rollingCountTimeoutMs: 60000
+    });
+
+    await breaker.execute(() => Promise.reject(new Error('boom'))).catch(() => undefined);
+    expect(breaker.getState()).toBe('OPEN');
+
+    jest.advanceTimersByTime(60000);
+    expect(breaker.getState()).toBe('HALF_OPEN');
+
+    breaker.recordSuccess();
+    expect(breaker.getState()).toBe('HALF_OPEN');
+    expect(breaker.getMetrics().successCount).toBe(1);
+
+    breaker.recordSuccess();
+    breaker.recordSuccess();
+    expect(breaker.getState()).toBe('CLOSED');
+  });
+
+  test('a rejected call with no fallback configured rethrows the original error', async () => {
+    const breaker = new CircuitBreaker({
+      errorThresholdPercentage: 5,
+      halfOpenMaxAttempts: 3,
+      resetTimeoutMs: 60000,
+      rollingCountTimeoutMs: 60000
+    });
+    const boom = new Error('no fallback here');
+
+    await expect(breaker.execute(() => Promise.reject(boom))).rejects.toBe(boom);
+    expect(breaker.getMetrics().failureCount).toBe(1);
+  });
+});

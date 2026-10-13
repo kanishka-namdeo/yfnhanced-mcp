@@ -65,7 +65,7 @@ export class AnalysisTools {
   }
 
   registerTools(server: Server): void {
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    server.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({
       tools: [
         {
           name: 'get_analysis',
@@ -94,14 +94,15 @@ export class AnalysisTools {
       const { name, arguments: args } = request.params;
 
       if (name === 'get_analysis') {
-        return await this.getAnalysis(args);
+        const result = await this.getAnalysis(args);
+        return result;
       }
 
       throw new Error(`Unknown tool: ${name}`);
     });
   }
 
-  public async getAnalysis(args: unknown) {
+  public async getAnalysis(args: unknown): Promise<AnalysisOutput> {
     const input = z.object({
       symbol: z.string().min(1).max(20),
       includeExpired: z.boolean().optional().default(false)
@@ -187,7 +188,7 @@ export class AnalysisTools {
     };
   }
 
-  private extractCurrentRatings(opinion: AnalysisResult['analystOpinion']): AnalysisData['currentRatings'] {
+  private extractCurrentRatings(opinion: AnalysisResult['analystOpinion'] | undefined): AnalysisData['currentRatings'] {
     const ratings = {
       strongBuy: 0,
       buy: 0,
@@ -251,7 +252,7 @@ export class AnalysisTools {
     };
   }
 
-  private processRecommendationTrend(trendData: AnalysisResult['recommendationTrend'], includeExpired: boolean): RecommendationTrend[] {
+  private processRecommendationTrend(trendData: AnalysisResult['recommendationTrend'] | undefined, includeExpired: boolean): RecommendationTrend[] {
     if (!trendData?.trend) {
       return [];
     }
@@ -344,9 +345,10 @@ export class AnalysisTools {
       const t = data.earningsTrends[i];
       flat[`earningsTrend_${i}_period`] = t.period;
       flat[`earningsTrend_${i}_growth`] = t.growth;
-      if (t.earningsEstimate) {
-        flat[`earningsTrend_${i}_estimate`] = t.earningsEstimate.avg;
-        flat[`earningsTrend_${i}_analysts`] = t.earningsEstimate.numberOfAnalysts;
+      const estimate: EarningsTrend['earningsEstimate'] | null | undefined = t.earningsEstimate;
+      if (estimate !== undefined && estimate !== null) {
+        flat[`earningsTrend_${i}_estimate`] = estimate.avg;
+        flat[`earningsTrend_${i}_analysts`] = estimate.numberOfAnalysts;
       }
     }
 

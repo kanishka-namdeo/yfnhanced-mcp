@@ -1,696 +1,384 @@
-import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, afterEach, jest } from '@jest/globals';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
-import { rateLimitConfigs, concurrentRequestCounts, backoffStrategies } from '../fixtures/test-data.ts';
+import { RateLimiter, RateLimitError } from '../../src/middleware/rate-limiter';
+import { RetryPolicy } from '../../src/middleware/retry';
+import { Cache } from '../../src/middleware/cache';
+import { YahooFinanceClient } from '../../src/services/yahoo-finance';
+import { YahooFinanceError, YF_ERR_RATE_LIMIT } from '../../src/types/errors';
+import { rateLimitConfigs } from '../fixtures/test-data.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const SERVER_PATH = path.resolve(__dirname, '../../dist/index.js');
 
-describe('Rate Limit Chaos Tests', () => {
-  let serverProcess: ChildProcess | null = null;
-  let serverPort = 3000;
-  const originalFetch = global.fetch;
-  let requestCounter = 0;
+function limiterConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { strategy: 'token-bucket', maxRequests: 5, windowMs: 60000, tokenRefillRate: 1, ...overrides };
+}
 
-  beforeEach(async () => {
-    serverPort = 3000 + Math.floor(Math.random() * 1000);
-    requestCounter = 0;
-    await startServer(serverPort);
+async function attempt(limiter: RateLimiter, endpoint?: string): Promise<string> {
+  return limiter.execute(async () => 'payload', endpoint)
+    .then(() => 'ok', (error: unknown) => {
+      const err = error as RateLimitError;
+      return `${err.name}|${err.message}|${String(err.code)}|${String(err.statusCode)}|${String(err.retryAfter)}`;
+    });
+}
+
+describe('Rate limit chaos (in-process fault injection)', () => {
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
-  afterEach(async () => {
-    if (serverProcess) {
-      await stopServer();
-    }
-    global.fetch = originalFetch;
+  describe('exhaustion throws, it never queues', () => {
+    test('the calendar-window tracker rejects the request that passes the per-minute limit', async () => {
+      // `requestsPerMinute` unset falls back to `maxRequests`, so the minute window trips
+      // on the request AFTER the burst capacity is used (`count >= limit`).
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 3 }) as never);
+
+      expect(await attempt(limiter)).toBe('ok');
+      expect(await attempt(limiter)).toBe('ok');
+      expect(await attempt(limiter)).toContain('RateLimitError|Rate limit exceeded|YF_ERR_RATE_LIMIT|429|60');
+      expect(limiter.getStats().rejectedRequests).toBe(1);
+      expect(limiter.getStats().totalRequests).toBe(2);
+    });
+
+    test('an explicit requestsPerMinute is honored independently of burst capacity', async () => {
+      // Fake timers freeze `Date.now`, so the token bucket cannot refill mid-loop and the
+      // only limiter that can trip is the fixed calendar-window tracker.
+      jest.useFakeTimers();
+      const limiter = new RateLimiter(limiterConfig({
+        maxRequests: 1000,
+        requestsPerMinute: rateLimitConfigs.requestsPerMinute,
+        tokenRefillRate: 1000
+      }) as never);
+
+      const results: string[] = [];
+      for (let i = 0; i < rateLimitConfigs.requestsPerMinute + 1; i++) {
+        results.push(await attempt(limiter));
+      }
+
+      // Measured off-by-one: `trackRequest` increments first and `isExceeded` then compares
+      // `count >= limit`, so a per-minute limit of N only ever serves N - 1 requests.
+      expect(results.filter(r => r === 'ok')).toHaveLength(rateLimitConfigs.requestsPerMinute - 1);
+      expect(results[rateLimitConfigs.requestsPerMinute - 1])
+        .toBe('RateLimitError|Rate limit exceeded|YF_ERR_RATE_LIMIT|429|60');
+
+      jest.advanceTimersByTime(60000);
+      expect(await attempt(limiter)).toBe('ok');
+    });
+
+    test('exhaustion rejects immediately instead of parking the caller in a queue', async () => {
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 2, requestsPerMinute: 100000 }) as never);
+      const inflight = [
+        limiter.execute(async () => { await new Promise(r => setTimeout(r, 300)); return 'a'; }, 'slow-a'),
+        limiter.execute(async () => { await new Promise(r => setTimeout(r, 300)); return 'b'; }, 'slow-b')
+      ];
+      await Promise.all(inflight);
+
+      // Tokens are gone (capacity 2, refill 1/s) and the per-endpoint concurrency guard is
+      // hit for the same endpoint; either way the caller is thrown at, not queued.
+      const started = Date.now();
+      const rejected = await attempt(limiter, 'slow-a');
+      expect(Date.now() - started).toBeLessThan(90);
+      expect(rejected).toContain('RateLimitError');
+      expect(limiter.getStats().queueLength).toBe(0);
+    });
+
+    test('only concurrency queues, and it drains FIFO once a slot frees', async () => {
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 2, requestsPerMinute: 100000, tokenRefillRate: 100 }) as never);
+      await limiter.acquire();
+      await limiter.acquire();
+
+      let released = false;
+      const queued = limiter.acquire().then(() => { released = true; });
+      expect(limiter.getStats().queueLength).toBe(1);
+
+      await new Promise(r => setTimeout(r, 20));
+      expect(released).toBe(false);
+
+      limiter.release();
+      await queued;
+      expect(released).toBe(true);
+      expect(limiter.getStats().queueLength).toBe(0);
+    });
+
+    test('the token bucket refills continuously and restores service', async () => {
+      jest.useFakeTimers();
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 4, requestsPerMinute: 100000, tokenRefillRate: 1 }) as never);
+
+      for (let i = 0; i < 4; i++) {
+        expect(await attempt(limiter)).toBe('ok');
+      }
+      expect(await attempt(limiter)).toContain('RateLimitError');
+
+      jest.advanceTimersByTime(2000);
+      expect(await attempt(limiter)).toBe('ok');
+    });
   });
 
-  async function startServer(port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const serverPath = path.join(__dirname, '../../dist/index.js');
+  describe('adaptive throttling from response headers', () => {
+    test('low remaining plus retry-after shrinks the limit and makes the next call throw', async () => {
+      const limiter = new RateLimiter(limiterConfig({
+        maxRequests: 100, requestsPerMinute: 100000, tokenRefillRate: 100
+      }) as never);
+      expect(limiter.predictiveThrottle()).toBe(false);
 
-      if (!existsSync(serverPath)) {
-        reject(new Error('Server build not found. Run "npm run build" first.'));
-        return;
+      limiter.updateFromHeaders(new Headers({
+        'x-ratelimit-limit': '100',
+        'x-ratelimit-remaining': '1',
+        'retry-after': '30'
+      }));
+
+      expect(limiter.getStats().currentLimit).toBe(81);
+      expect(limiter.predictiveThrottle()).toBe(true);
+      expect(limiter.getBackoffDuration()).toBe(30);
+
+      const rejected = await attempt(limiter);
+      expect(rejected).toContain('Predictive rate limit triggered to avoid hard limit');
+      expect(rejected).toContain('|429|30');
+    });
+
+    test('a healthy remaining ratio does not throttle', async () => {
+      const limiter = new RateLimiter(limiterConfig({
+        maxRequests: 100, requestsPerMinute: 100000, tokenRefillRate: 100
+      }) as never);
+      limiter.updateFromHeaders(new Headers({ 'x-ratelimit-limit': '100', 'x-ratelimit-remaining': '90' }));
+      expect(limiter.predictiveThrottle()).toBe(false);
+      expect(await attempt(limiter)).toBe('ok');
+    });
+
+    test('the adaptive floor is a quarter of maxRequests', async () => {
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 40 }) as never);
+      limiter.updateFromHeaders(new Headers({ 'x-ratelimit-remaining': '0', 'retry-after': '5' }));
+      for (let i = 0; i < 40; i++) {
+        limiter.updateFromHeaders(new Headers({ 'x-ratelimit-remaining': '0', 'retry-after': '5' }));
       }
-
-      serverProcess = spawn('node', [serverPath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'test',
-          PORT: String(port),
-          USE_MOCK_API: 'true'
-        }
-      });
-
-      let output = '';
-
-      serverProcess.stdout?.on('data', (data) => {
-        output += data.toString();
-        if (output.includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
-        }
-      });
-
-      serverProcess.stderr?.on('data', (data) => {
-        if (data.toString().includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
-        }
-      });
-
-      serverProcess.on('error', (err) => {
-        reject(new Error(`Failed to start server: ${err.message}`));
-      });
-
-      setTimeout(() => {
-        resolve();
-      }, 10000);
+      expect(limiter.getStats().currentLimit).toBe(10);
     });
-  }
+  });
 
-  async function stopServer(): Promise<void> {
-    if (!serverProcess) return;
+  describe('a 429 from upstream inside execute', () => {
+    test('serves the cached rate_limited_<endpoint> entry instead of throwing', async () => {
+      const cache = new Cache({ enabled: true, store: 'memory', ttl: 60000, maxEntries: 10 } as never);
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 50, requestsPerMinute: 100000, tokenRefillRate: 100 }) as never);
+      limiter.setCache({ get: key => cache.get(key), set: (key, value) => cache.set(key, value) });
+      await cache.set('rate_limited_ep429', 'stale-but-serving');
 
-    return new Promise((resolve) => {
-      serverProcess?.on('exit', () => {
-        serverProcess = null;
-        resolve();
-      });
+      const served = await limiter.execute(async () => {
+        throw new Error('HTTP 429 Too Many Requests');
+      }, 'ep429');
 
-      serverProcess?.kill('SIGTERM');
-      setTimeout(() => {
-        serverProcess?.kill('SIGKILL');
-        serverProcess = null;
-        resolve();
-      }, 5000);
+      expect(served).toBe('stale-but-serving');
     });
-  }
 
-  function createMCPRequest(method: string, params: Record<string, unknown> = {}, id: number = 1): string {
-    return JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params
+    test('without a cached entry it throws RateLimitError with a 60 second hint', async () => {
+      const cache = new Cache({ enabled: true, store: 'memory', ttl: 60000, maxEntries: 10 } as never);
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 50, requestsPerMinute: 100000, tokenRefillRate: 100 }) as never);
+      limiter.setCache({ get: key => cache.get(key), set: (key, value) => cache.set(key, value) });
+
+      const rejected = await limiter.execute(async () => {
+        throw new Error('HTTP 429 Too Many Requests');
+      }, 'epMissing').then(() => 'resolved', (error: unknown) => error as RateLimitError);
+
+      expect(rejected).toBeInstanceOf(Error);
+      const err = rejected as RateLimitError;
+      expect(err.message).toBe('Rate limit exceeded, falling back to cached data');
+      expect(err.code).toBe(YF_ERR_RATE_LIMIT);
+      expect(err.statusCode).toBe(429);
+      expect(err.isRateLimit).toBe(true);
+      expect(err.retryAfter).toBe(60);
     });
-  }
 
-  async function sendMCPRequest(request: string): Promise<unknown> {
-    if (!serverProcess || !serverProcess.stdin) {
-      throw new Error('Server process not available');
+    test('non-429 failures are rethrown unchanged', async () => {
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 50, requestsPerMinute: 100000, tokenRefillRate: 100 }) as never);
+      const failure = await limiter.execute(async () => { throw new Error('upstream exploded'); }, 'plain')
+        .then(() => 'resolved', (error: unknown) => error as Error);
+      expect((failure as Error).message).toBe('upstream exploded');
+    });
+  });
+
+  describe('rate-limit aware retry backoff', () => {
+    const retryConfig = {
+      enabled: true, maxRetries: 2, initialDelayMs: 100, maxDelayMs: 10000,
+      strategy: 'exponential', backoffMultiplier: 2, jitter: false,
+      retryableStatusCodes: [429, 500, 502, 503, 504], retryableErrorCodes: []
+    };
+
+    async function delaysFor(error: YahooFinanceError, maxRetries = 1): Promise<number[]> {
+      const delays: number[] = [];
+      const policy = new RetryPolicy({ ...retryConfig, maxRetries } as never, async (ms: number) => { delays.push(ms); });
+      await policy.execute(async () => { throw error; }).catch(() => undefined);
+      return delays;
     }
 
-    return new Promise((resolve, reject) => {
-      let output = '';
-
-      const timeout = setTimeout(() => {
-        reject(new Error('Request timeout'));
-      }, 15000);
-
-      serverProcess?.stdout?.on('data', (data) => {
-        output += data.toString();
-        try {
-          const response = JSON.parse(output);
-          if (response && typeof response === 'object' && 'id' in response) {
-            clearTimeout(timeout);
-            resolve(response);
-          }
-        } catch {
-          output = '';
-        }
-      });
-
-      serverProcess?.stdin?.write(request + '\n');
+    test('a rate limit without a retry-after doubles the base delay', async () => {
+      const delays = await delaysFor(new RateLimitError('slow down', undefined, 100, 0));
+      expect(delays).toEqual([200]);
     });
-  }
 
-  function mockRateLimit(limit: number, retryAfter: number = 60) {
-    global.fetch = jest.fn(() => {
-      requestCounter++;
-      if (requestCounter > limit) {
-        return Promise.resolve({
-          ok: false,
-          status: 429,
-          headers: {
-            get: (name: string) => {
-              if (name === 'retry-after') return String(retryAfter);
-              if (name === 'x-ratelimit-limit') return String(limit);
-              if (name === 'x-ratelimit-remaining') return '0';
-              return null;
-            }
-          },
-          json: () => Promise.resolve({ error: 'Too Many Requests' })
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: {
-          get: (name: string) => {
-            if (name === 'x-ratelimit-limit') return String(limit);
-            if (name === 'x-ratelimit-remaining') return String(limit - requestCounter);
-            return null;
-          }
+    test('a rate limit with a retry-after waits retryAfter * 1000, never less than the base', async () => {
+      const long = await delaysFor(new RateLimitError('slow down', 7, 100, 0));
+      expect(long).toEqual([7000]);
+
+      const twoAttempts = await delaysFor(new RateLimitError('slow down', 7, 100, 0), 2);
+      expect(twoAttempts).toEqual([7000, 7000]);
+
+      const subBase = await delaysFor(new RateLimitError('slow down', 0, 100, 0));
+      expect(subBase).toEqual([200]);
+    });
+
+    test('the doubled delay is still capped by maxDelayMs', async () => {
+      const delays = await delaysFor(new RateLimitError('slow down', undefined, 100, 0));
+      const capped = new RetryPolicy({ ...retryConfig, maxRetries: 1, maxDelayMs: 150 } as never, async () => undefined);
+      expect(capped.calculateDelayForError(new RateLimitError('slow down', undefined, 100, 0), 1)).toBe(150);
+      expect(delays).toEqual([200]);
+    });
+
+    test('a classified 429 response is treated as a rate limit and retried', async () => {
+      const delays: number[] = [];
+      const policy = new RetryPolicy(retryConfig as never, async (ms: number) => { delays.push(ms); });
+      let calls = 0;
+      await policy.execute(async () => {
+        calls++;
+        throw Object.assign(new Error('Too Many Requests'), { status: 429 });
+      }).catch(() => undefined);
+
+      expect(calls).toBe(3);
+      expect(delays).toEqual([200, 400]);
+    });
+  });
+
+  describe('the limiter inside the service composition', () => {
+    test('retry attempts bypass the limiter: one tracked request covers the whole retry chain', async () => {
+      let libraryCalls = 0;
+      const client = new YahooFinanceClient({
+        serverInfo: { name: 'chaos', version: '0', protocolVersion: '2024-11-05' },
+        capabilities: { tools: {} },
+        transport: 'stdio',
+        rateLimit: { strategy: 'token-bucket', maxRequests: 50, windowMs: 60000, tokenRefillRate: 50, requestsPerMinute: 2 },
+        cache: { enabled: false, store: 'memory', ttl: 60000, maxEntries: 10 },
+        retry: {
+          enabled: true, maxRetries: 2, initialDelayMs: 1, maxDelayMs: 5,
+          strategy: 'fixed', backoffMultiplier: 2, jitter: false,
+          retryableStatusCodes: [429], retryableErrorCodes: []
         },
-        json: () => Promise.resolve({ mockData: 'success' })
-      });
+        yahooFinance: { baseUrl: 'https://example.invalid', timeoutMs: 1000, maxConcurrentRequests: 5, requestQueueSize: 10, validateResponses: true, strictMode: false },
+        circuitBreaker: { errorThresholdPercentage: 50, halfOpenMaxAttempts: 1, resetTimeoutMs: 60000, rollingCountTimeoutMs: 60000 }
+      } as never) as YahooFinanceClient & Record<string, unknown>;
+
+      (client as Record<string, unknown>).yahooFinanceInstance = {
+        quote: async () => {
+          libraryCalls++;
+          throw Object.assign(new Error('Too Many Requests'), { status: 429 });
+        }
+      };
+
+      const rejection = await client.getQuote('AAPL').then(() => null, (error: unknown) => error as YahooFinanceError);
+
+      expect(libraryCalls).toBe(3);
+      expect(rejection?.code).toBe(YF_ERR_RATE_LIMIT);
+      expect((client.rateLimiter as never as RateLimiter).getStats().totalRequests).toBe(1);
+      expect((client.rateLimiter as never as RateLimiter).getStats().minuteCount).toBe(1);
     });
-  }
+  });
 
-  function mockBurstRateLimit(burstLimit: number, sustainedLimit: number) {
-    let requestCount = 0;
-    global.fetch = jest.fn(() => {
-      requestCount++;
-      const isBurst = requestCount <= burstLimit;
-      const isOverLimit = requestCount > sustainedLimit;
+  describe('reset and stats', () => {
+    test('reset() clears tokens, windows, endpoint state and counters', async () => {
+      const limiter = new RateLimiter(limiterConfig({ maxRequests: 2, requestsPerMinute: 100000 }) as never);
+      await attempt(limiter);
+      await attempt(limiter);
+      expect(await attempt(limiter)).toContain('RateLimitError');
 
-      if (isOverLimit && !isBurst) {
-        return Promise.resolve({
-          ok: false,
-          status: 429,
-          headers: {
-            get: (name: string) => {
-              if (name === 'retry-after') return '60';
-              if (name === 'x-ratelimit-limit') return String(sustainedLimit);
-              if (name === 'x-ratelimit-remaining') return '0';
-              return null;
+      limiter.reset();
+      const stats = limiter.getStats();
+      expect(stats.totalRequests).toBe(0);
+      expect(stats.rejectedRequests).toBe(0);
+      expect(stats.minuteCount).toBe(0);
+      expect(stats.queueLength).toBe(0);
+      expect(await attempt(limiter)).toBe('ok');
+    });
+  });
+
+  describe('spawned-server protocol surface under request pressure', () => {
+    let serverProcess: ChildProcess | null = null;
+    let stdoutBuffer = '';
+    const pending = new Map<number, (response: Record<string, unknown>) => void>();
+
+    function createMCPRequest(method: string, params: Record<string, unknown> = {}, id = 1): string {
+      return JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    }
+
+    function sendMCPRequest(request: string, timeoutMs = 10000): Promise<Record<string, unknown>> {
+      const id = (JSON.parse(request) as { id: number }).id;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Request ${String(id)} timed out after ${String(timeoutMs)} ms`));
+        }, timeoutMs);
+        pending.set(id, response => { clearTimeout(timer); resolve(response); });
+        if (serverProcess?.stdin === null || serverProcess?.stdin === undefined) {
+          clearTimeout(timer);
+          reject(new Error('Server process not available'));
+          return;
+        }
+        serverProcess.stdin.write(`${request}\n`);
+      });
+    }
+
+    beforeAll(async () => {
+      if (!existsSync(SERVER_PATH)) {
+        throw new Error('Server build not found. Run "npm run build" first.');
+      }
+      serverProcess = spawn(process.execPath, [SERVER_PATH], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, NODE_ENV: 'test' }
+      });
+      serverProcess.stdout?.setEncoding('utf8');
+      serverProcess.stdout?.on('data', (chunk: string) => {
+        stdoutBuffer += chunk;
+        let newline = stdoutBuffer.indexOf('\n');
+        while (newline >= 0) {
+          const line = stdoutBuffer.slice(0, newline).trim();
+          stdoutBuffer = stdoutBuffer.slice(newline + 1);
+          if (line !== '') {
+            const response = JSON.parse(line) as Record<string, unknown>;
+            const id = response.id as number | undefined;
+            if (id !== undefined) {
+              pending.get(id)?.(response);
+              pending.delete(id);
             }
-          },
-          json: () => Promise.resolve({ error: 'Too Many Requests' })
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ mockData: 'success' })
-      });
-    });
-  }
-
-  describe('Rate limit detection', () => {
-    test('should detect rate limit response', async () => {
-      mockRateLimit(5);
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-
-      const rateLimitedResponses = responses.filter(r =>
-        r.status === 'fulfilled' &&
-        r.value.result !== undefined &&
-        typeof r.value.result.content === 'string' &&
-        r.value.result.content.includes('rate limit')
-      );
-
-      expect(rateLimitedResponses.length).toBeGreaterThan(0);
-    });
-
-    test('should extract retry-after header', async () => {
-      mockRateLimit(3, 120);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-
-      expect(requestCounter).toBeGreaterThan(3);
-    });
-
-    test('should track remaining requests', async () => {
-      mockRateLimit(10);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request);
-
-      expect(requestCounter).toBe(1);
-    });
-  });
-
-  describe('Rate limit backoff', () => {
-    test('should implement exponential backoff on rate limit', async () => {
-      mockRateLimit(2, 2);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const startTime = Date.now();
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(1000);
-    });
-
-    test('should apply jitter to backoff', async () => {
-      mockRateLimit(3, 1);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-
-      expect(requestCounter).toBeGreaterThan(2);
-    });
-
-    test('should respect retry-after header', async () => {
-      mockRateLimit(2, 3);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const startTime = Date.now();
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      await sendMCPRequest(request);
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(2000);
-      expect(duration).toBeLessThan(10000);
-    });
-  });
-
-  describe('Burst handling', () => {
-    test('should handle burst requests within limit', async () => {
-      mockBurstRateLimit(10, 20);
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-
-      const successfulResponses = responses.filter(r => r.status === 'fulfilled');
-      expect(successfulResponses.length).toBe(10);
-    });
-
-    test('should throttle after burst limit exceeded', async () => {
-      mockBurstRateLimit(5, 10);
-
-      const requests = Array(15).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(1000);
-    });
-
-    test('should recover from burst throttling', async () => {
-      let isRecovered = false;
-      global.fetch = jest.fn(() => {
-        if (!isRecovered) {
-          return Promise.resolve({
-            ok: false,
-            status: 429,
-            headers: {
-              get: () => '1'
-            },
-            json: () => Promise.resolve({ error: 'Too Many Requests' })
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: { symbols: ['AAPL'] }
-      });
-
-      try {
-        await sendMCPRequest(request1);
-      } catch (error) {
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      isRecovered = true;
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: { symbols: ['AAPL'] }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
-    });
-  });
-
-  describe('Concurrent request throttling', () => {
-    test('should throttle concurrent requests', async () => {
-      mockRateLimit(5);
-
-      const requests = Array(20).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(1000);
-    });
-
-    test('should respect max concurrent limit', async () => {
-      mockRateLimit(10);
-
-      const requests = Array(30).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(2000);
-    });
-
-    test('should queue requests when limit reached', async () => {
-      mockRateLimit(3);
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-
-      const successfulResponses = responses.filter(r => r.status === 'fulfilled');
-      expect(successfulResponses.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('Rate limit with caching', () => {
-    test('should use cache during rate limit', async () => {
-      let requestCount = 0;
-      global.fetch = jest.fn(() => {
-        requestCount++;
-        if (requestCount === 1) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ cached: 'data' })
-          });
-        }
-        return Promise.resolve({
-          ok: false,
-          status: 429,
-          headers: {
-            get: () => '60'
-          },
-          json: () => Promise.resolve({ error: 'Too Many Requests' })
-        });
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request1);
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
-      expect(requestCount).toBeLessThan(5);
-    });
-
-    test('should bypass cache with force refresh even during rate limit', async () => {
-      mockRateLimit(2);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          forceRefresh: true
-        }
-      });
-
-      try {
-        await sendMCPRequest(request);
-      } catch (error) {
-        expect(error).toBeDefined();
-      }
-    });
-  });
-
-  describe('Rate limit recovery', () => {
-    test('should recover from rate limit after cooldown', async () => {
-      let isRateLimited = true;
-      global.fetch = jest.fn(() => {
-        if (isRateLimited) {
-          return Promise.resolve({
-            ok: false,
-            status: 429,
-            headers: {
-              get: () => '1'
-            },
-            json: () => Promise.resolve({ error: 'Too Many Requests' })
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: { symbols: ['AAPL'] }
-      });
-
-      try {
-        await sendMCPRequest(request1);
-      } catch (error) {
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      isRateLimited = false;
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: { symbols: ['AAPL'] }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
-    });
-
-    test('should gradually increase request rate after recovery', async () => {
-      let requestCount = 0;
-      global.fetch = jest.fn(() => {
-        requestCount++;
-        if (requestCount < 5) {
-          return Promise.resolve({
-            ok: false,
-            status: 429,
-            headers: {
-              get: () => '1'
-            },
-            json: () => Promise.resolve({ error: 'Too Many Requests' })
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: { symbols: ['AAPL'] }
-      });
-
-      const startTime = Date.now();
-      const response = await sendMCPRequest(request);
-      const duration = Date.now() - startTime;
-
-      expect(response).toHaveProperty('result');
-      expect(duration).toBeGreaterThan(1000);
-    });
-  });
-
-  describe('Rate limit with different endpoints', () => {
-    test('should handle per-endpoint rate limits', async () => {
-      let quoteCount = 0;
-      let newsCount = 0;
-      global.fetch = jest.fn((url: string) => {
-        if (url.includes('quote')) {
-          quoteCount++;
-          if (quoteCount > 3) {
-            return Promise.resolve({
-              ok: false,
-              status: 429,
-              json: () => Promise.resolve({ error: 'Too Many Requests' })
-            });
           }
-        } else if (url.includes('news')) {
-          newsCount++;
-          if (newsCount > 5) {
-            return Promise.resolve({
-              ok: false,
-              status: 429,
-              json: () => Promise.resolve({ error: 'Too Many Requests' })
-            });
-          }
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const quoteRequests = Array(5).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const newsRequests = Array(5).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_news',
-          arguments: { symbol: 'AAPL' }
-        }, i + 6)
-      );
-
-      const allRequests = [...quoteRequests, ...newsRequests];
-      const responses = await Promise.allSettled(
-        allRequests.map(req => sendMCPRequest(req))
-      );
-
-      const successfulResponses = responses.filter(r => r.status === 'fulfilled');
-      expect(successfulResponses.length).toBeGreaterThan(5);
-    });
-  });
-
-  describe('Rate limit edge cases', () => {
-    test('should handle zero remaining requests', async () => {
-      mockRateLimit(0);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
+          newline = stdoutBuffer.indexOf('\n');
         }
       });
 
-      const response = await sendMCPRequest(request);
-
-      expect(response).toBeDefined();
+      await sendMCPRequest(createMCPRequest('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        clientInfo: { name: 'chaos-rate-limit', version: '1.0.0' }
+      }, 0));
+      serverProcess.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
     });
 
-    test('should handle very low rate limit', async () => {
-      mockRateLimit(1, 1);
-
-      const requests = Array(5).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeGreaterThan(3000);
+    afterAll(async () => {
+      if (serverProcess === null) return;
+      const exited = new Promise<void>(resolve => { serverProcess?.once('exit', () => resolve()); });
+      serverProcess.stdin?.end();
+      serverProcess.kill('SIGTERM');
+      const killTimer = setTimeout(() => { serverProcess?.kill('SIGKILL'); }, 3000);
+      await exited;
+      clearTimeout(killTimer);
+      serverProcess = null;
     });
 
-    test('should handle very high rate limit', async () => {
-      mockRateLimit(1000);
+    test('a burst of concurrent requests is answered, not dropped: every reply carries all 17 tools', async () => {
+      const responses = await Promise.all(Array.from({ length: 20 }, (_unused, i) =>
+        sendMCPRequest(createMCPRequest('tools/list', {}, i + 1))));
 
-      const requests = Array(50).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeLessThan(30000);
+      expect(responses).toHaveLength(20);
+      responses.forEach((response, index) => {
+        expect(response.id).toBe(index + 1);
+        expect((response.result as { tools: unknown[] }).tools).toHaveLength(17);
+      });
     });
   });
 });

@@ -6,7 +6,14 @@ import { AppConfigSchema } from './validation.js';
 
 type ConfigSource = 'env' | 'file';
 
-function parseEnvVar(key: string, defaultValue: any): any {
+/** Config data before `AppConfigSchema.parse` proves it: sections keyed by unknown values. */
+type ConfigObject = Record<string, unknown>;
+
+type YamlModule = {
+  load: (source: string) => unknown;
+};
+
+function parseEnvVar(key: string, defaultValue: unknown): unknown {
   const envKey = `YF_MCP_${key.toUpperCase()}`;
   const value = process.env[envKey];
 
@@ -30,8 +37,8 @@ function parseEnvVar(key: string, defaultValue: any): any {
   return value;
 }
 
-function loadFromEnv(): Partial<AppConfig> {
-  const config: any = {};
+function loadFromEnv(): ConfigObject {
+  const config: ConfigObject = {};
 
   config.rateLimit = {
     requestsPerMinute: parseEnvVar('RATE_LIMIT_REQUESTS_PER_MINUTE', defaultConfig.rateLimit.requestsPerMinute),
@@ -111,7 +118,29 @@ function loadFromEnv(): Partial<AppConfig> {
   return config;
 }
 
-function loadFromFile(configPath: string): Partial<AppConfig> | null {
+function isObject(item: unknown): item is ConfigObject {
+  return typeof item === 'object' && item !== null && !Array.isArray(item);
+}
+
+function isYamlModule(item: unknown): item is YamlModule {
+  return typeof item === 'object' && item !== null && 'load' in item && typeof item.load === 'function';
+}
+
+function loadYamlModule(): YamlModule {
+  // `require` is not available in this ESM build and `js-yaml` is not a dependency, so
+  // this throws and `loadFromFile` downgrades it to warn + null. That dead end is the
+  // documented behavior of `.yaml`/`.yml` configs; do not add the dependency here.
+  const requireModule: (id: string) => unknown = require;
+  const candidate = requireModule('js-yaml');
+
+  if (!isYamlModule(candidate)) {
+    throw new TypeError('js-yaml does not expose a load(source) function');
+  }
+
+  return candidate;
+}
+
+function loadFromFile(configPath: string): ConfigObject | null {
   try {
     if (!fs.existsSync(configPath)) {
       return null;
@@ -121,12 +150,13 @@ function loadFromFile(configPath: string): Partial<AppConfig> | null {
     const content = fs.readFileSync(configPath, 'utf-8');
 
     if (ext === '.json') {
-      return JSON.parse(content);
+      const parsed: unknown = JSON.parse(content);
+      return isObject(parsed) ? parsed : null;
     }
 
     if (ext === '.yaml' || ext === '.yml') {
-      const yaml = require('js-yaml');
-      return yaml.load(content);
+      const parsed: unknown = loadYamlModule().load(content);
+      return isObject(parsed) ? parsed : null;
     }
 
     return null;
@@ -136,19 +166,21 @@ function loadFromFile(configPath: string): Partial<AppConfig> | null {
   }
 }
 
-function deepMerge(target: any, source: any): any {
-  const output = { ...target };
+function deepMerge(target: unknown, source: unknown): ConfigObject {
+  const output: ConfigObject = isObject(target) ? { ...target } : {};
 
   if (isObject(target) && isObject(source)) {
     Object.keys(source).forEach((key) => {
-      if (isObject(source[key])) {
+      const sourceValue = source[key];
+
+      if (isObject(sourceValue)) {
         if (!(key in target)) {
-          Object.assign(output, { [key]: source[key] });
+          output[key] = sourceValue;
         } else {
-          output[key] = deepMerge(target[key], source[key]);
+          output[key] = deepMerge(target[key], sourceValue);
         }
       } else {
-        Object.assign(output, { [key]: source[key] });
+        output[key] = sourceValue;
       }
     });
   }
@@ -156,22 +188,30 @@ function deepMerge(target: any, source: any): any {
   return output;
 }
 
-function isObject(item: any): boolean {
-  return item && typeof item === 'object' && !Array.isArray(item);
+function resolveConfigPath(explicit: string | undefined, fromEnv: string | undefined): string {
+  if (explicit !== undefined && explicit !== '') {
+    return explicit;
+  }
+
+  if (fromEnv !== undefined && fromEnv !== '') {
+    return fromEnv;
+  }
+
+  return './config.json';
 }
 
 export function loadConfig(options?: {
   configPath?: string;
   sources?: ConfigSource[];
 }): AppConfig {
-  const sources = options?.sources || ['env', 'file'];
-  let mergedConfig: any = { ...defaultConfig };
+  const sources = options?.sources ?? ['env', 'file'];
+  let mergedConfig: ConfigObject = { ...defaultConfig };
 
   if (sources.includes('file')) {
-    const configPath = options?.configPath || process.env.YF_MCP_CONFIG_PATH || './config.json';
+    const configPath = resolveConfigPath(options?.configPath, process.env.YF_MCP_CONFIG_PATH);
     const fileConfig = loadFromFile(configPath);
 
-    if (fileConfig) {
+    if (fileConfig !== null) {
       mergedConfig = deepMerge(mergedConfig, fileConfig);
     }
   }

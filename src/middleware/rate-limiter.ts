@@ -1,6 +1,15 @@
 import { YahooFinanceError, YF_ERR_RATE_LIMIT } from '../types/errors.js';
 import type { RateLimitConfig } from '../types/config.js';
 
+// 0 and NaN must fall through to the fallback exactly as `||` did: a zero refill rate or window limit would divide by zero or dead-lock the limiter.
+function orFallback(value: number | undefined, fallback: number): number {
+  return value !== undefined && value !== 0 && !Number.isNaN(value) ? value : fallback;
+}
+
+function isUsableNumber(value: number | undefined): value is number {
+  return value !== undefined && value !== 0 && !Number.isNaN(value);
+}
+
 export class RateLimitError extends YahooFinanceError {
   retryAfter?: number;
   limit?: number;
@@ -28,6 +37,7 @@ export class RateLimitError extends YahooFinanceError {
     this.limit = limit;
     this.remaining = remaining;
     this.reset = reset;
+    Object.setPrototypeOf(this, RateLimitError.prototype);
   }
 }
 
@@ -89,13 +99,13 @@ export class RateLimitTracker {
     this.perHourLimit = perHourLimit;
   }
 
-  trackRequest(endpoint: string): void {
+  trackRequest(_endpoint: string): void {
     const now = Date.now();
     const currentMinute = Math.floor(now / 60000);
     const currentHour = Math.floor(now / 3600000);
 
-    this.minuteWindow.set(currentMinute, (this.minuteWindow.get(currentMinute) || 0) + 1);
-    this.hourWindow.set(currentHour, (this.hourWindow.get(currentHour) || 0) + 1);
+    this.minuteWindow.set(currentMinute, (this.minuteWindow.get(currentMinute) ?? 0) + 1);
+    this.hourWindow.set(currentHour, (this.hourWindow.get(currentHour) ?? 0) + 1);
 
     this.cleanup();
   }
@@ -103,13 +113,13 @@ export class RateLimitTracker {
   getMinuteCount(): number {
     const now = Date.now();
     const currentMinute = Math.floor(now / 60000);
-    return this.minuteWindow.get(currentMinute) || 0;
+    return this.minuteWindow.get(currentMinute) ?? 0;
   }
 
   getHourCount(): number {
     const now = Date.now();
     const currentHour = Math.floor(now / 3600000);
-    return this.hourWindow.get(currentHour) || 0;
+    return this.hourWindow.get(currentHour) ?? 0;
   }
 
   isExceeded(): boolean {
@@ -169,17 +179,16 @@ export class AdaptiveThrottling {
   adjustLimits(responseHeaders: Headers): void {
     const rateLimitLimit = responseHeaders.get('x-ratelimit-limit');
     const rateLimitRemaining = responseHeaders.get('x-ratelimit-remaining');
-    const rateLimitReset = responseHeaders.get('x-ratelimit-reset');
     const retryAfter = responseHeaders.get('retry-after');
 
-    if (rateLimitLimit) {
+    if (rateLimitLimit !== null && rateLimitLimit !== '') {
       const limit = parseInt(rateLimitLimit, 10);
       if (!isNaN(limit)) {
         this.currentLimit = Math.max(this.minLimit, Math.min(this.maxLimit, limit));
       }
     }
 
-    if (rateLimitRemaining) {
+    if (rateLimitRemaining !== null && rateLimitRemaining !== '') {
       const remaining = parseInt(rateLimitRemaining, 10);
       if (!isNaN(remaining)) {
         this.responseHeaders.set('x-ratelimit-remaining', rateLimitRemaining);
@@ -197,7 +206,7 @@ export class AdaptiveThrottling {
       }
     }
 
-    if (retryAfter) {
+    if (retryAfter !== null && retryAfter !== '') {
       const retrySeconds = parseInt(retryAfter, 10);
       if (!isNaN(retrySeconds)) {
         this.responseHeaders.set('retry-after', retryAfter);
@@ -222,7 +231,7 @@ export class AdaptiveThrottling {
 
   getRemaining(): number {
     const remainingHeader = this.responseHeaders.get('x-ratelimit-remaining');
-    if (remainingHeader) {
+    if (remainingHeader !== undefined && remainingHeader !== '') {
       return parseInt(remainingHeader, 10);
     }
     return this.currentLimit;
@@ -230,7 +239,7 @@ export class AdaptiveThrottling {
 
   getRetryAfter(): number | undefined {
     const retryAfter = this.responseHeaders.get('retry-after');
-    if (retryAfter) {
+    if (retryAfter !== undefined && retryAfter !== '') {
       return parseInt(retryAfter, 10);
     }
     return undefined;
@@ -273,7 +282,7 @@ export class RateLimiter {
 
   constructor(config: RateLimitConfig) {
     this.config = config;
-    const refillRate = config.tokenRefillRate || 1;
+    const refillRate = orFallback(config.tokenRefillRate, 1);
     const capacity = config.maxRequests;
     this.tokenBucket = new TokenBucket(refillRate, capacity);
     this.tracker = new RateLimitTracker(
@@ -340,7 +349,7 @@ export class RateLimiter {
   }
 
   async execute<T>(fn: () => Promise<T>, endpoint?: string): Promise<T> {
-    const endpointKey = endpoint || 'default';
+    const endpointKey = endpoint !== undefined && endpoint !== '' ? endpoint : 'default';
     
     // Initialize endpoint concurrent counter
     if (!this.endpointConcurrent.has(endpointKey)) {
@@ -348,7 +357,7 @@ export class RateLimiter {
     }
     
     // Check per-endpoint concurrent limit
-    const currentEndpointConcurrent = this.endpointConcurrent.get(endpointKey) || 0;
+    const currentEndpointConcurrent = this.endpointConcurrent.get(endpointKey) ?? 0;
     if (currentEndpointConcurrent >= this.config.maxRequests) {
       this.rejectedRequests++;
       throw new RateLimitError(
@@ -363,8 +372,8 @@ export class RateLimiter {
     let endpointTracker = this.endpointLimits.get(endpointKey);
     if (!endpointTracker) {
       endpointTracker = new RateLimitTracker(
-        this.config.requestsPerMinute || this.config.maxRequests,
-        this.config.requestsPerHour || this.config.maxRequests * 60
+        orFallback(this.config.requestsPerMinute, this.config.maxRequests),
+        orFallback(this.config.requestsPerHour, this.config.maxRequests * 60)
       );
       this.endpointLimits.set(endpointKey, endpointTracker);
     }
@@ -383,7 +392,7 @@ export class RateLimiter {
 
     await this.acquire();
     this.totalRequests++;
-    this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) || 0) + 1);
+    this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) ?? 0) + 1);
     this.tracker.trackRequest(endpointKey);
 
     try {
@@ -409,7 +418,7 @@ export class RateLimiter {
       throw error;
     } finally {
       this.release();
-      this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) || 0) - 1);
+      this.endpointConcurrent.set(endpointKey, (this.endpointConcurrent.get(endpointKey) ?? 0) - 1);
     }
   }
 
@@ -424,7 +433,7 @@ export class RateLimiter {
 
   getBackoffDuration(): number {
     const waitTime = this.tokenBucket.waitForTokens(1);
-    const adaptiveBackoff = this.adaptiveThrottling.getRetryAfter() || 0;
+    const adaptiveBackoff = this.adaptiveThrottling.getRetryAfter() ?? 0;
     return Math.max(Math.ceil(waitTime / 1000), adaptiveBackoff);
   }
 
@@ -439,7 +448,7 @@ export class RateLimiter {
     this.adaptiveThrottling.adjustLimits(headers);
   }
 
-  private async waitForSlot(): Promise<void> {
+  private waitForSlot(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.queue.push(resolve);
       if (!this.isProcessingQueue) {
@@ -509,7 +518,7 @@ export class RateLimiter {
 
   reset(): void {
     this.tokenBucket = new TokenBucket(
-      this.config.tokenRefillRate || 1,
+      orFallback(this.config.tokenRefillRate, 1),
       this.config.maxRequests
     );
     this.tracker.reset();
@@ -529,9 +538,9 @@ export class RateLimiter {
 
   updateConfig(config: Partial<RateLimitConfig>): void {
     this.config = { ...this.config, ...config };
-    if (config.maxRequests) {
+    if (isUsableNumber(config.maxRequests)) {
       this.tokenBucket.capacity = config.maxRequests;
-      this.tokenBucket.refillRate = config.tokenRefillRate || 1;
+      this.tokenBucket.refillRate = orFallback(config.tokenRefillRate, 1);
     }
   }
 }

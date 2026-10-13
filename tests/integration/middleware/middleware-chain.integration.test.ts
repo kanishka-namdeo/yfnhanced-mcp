@@ -1,548 +1,744 @@
-import { RateLimiter } from '../../../src/middleware/rate-limiter';
-import { CircuitBreaker } from '../../../src/middleware/circuit-breaker';
+// This file used to be called "middleware chain", and its name was a lie twice over.
+// There is no chain abstraction: `MiddlewareChain`, `MiddlewareFunction` and `use()`
+// (src/types/middleware.ts:236-246) are declared and never implemented, so a test of them
+// cannot pass honestly. The real composition is hand-written twice in
+// src/services/yahoo-finance.ts — `executeWithMiddleware` (:855-926) and
+// `executeWithGracefulDegradation` (:234-326) — and the two copies are NOT identical.
+//
+// This suite now integrates the real primitives in that documented order, using the actual
+// Cache, CircuitBreaker, RateLimiter and RetryPolicy classes with no mocking, and asserts
+// the ordering, short-circuit and cache-write properties the service depends on. Where the
+// two compositions diverge, the divergence is pinned rather than smoothed over.
 import { Cache } from '../../../src/middleware/cache';
-import type { RateLimitConfig, CacheConfig, CircuitBreakerConfig } from '../../../src/types/config';
+import { CircuitBreaker, CircuitBreakerOpenError } from '../../../src/middleware/circuit-breaker';
+import { RateLimiter } from '../../../src/middleware/rate-limiter';
+import { RetryPolicy } from '../../../src/middleware/retry';
+import * as cacheModule from '../../../src/middleware/cache';
+import * as breakerModule from '../../../src/middleware/circuit-breaker';
+import * as limiterModule from '../../../src/middleware/rate-limiter';
+import * as retryModule from '../../../src/middleware/retry';
+import * as securityModule from '../../../src/middleware/security';
+import { classifyError } from '../../../src/utils/error-classifier';
+import type { CacheConfig, CircuitBreakerConfig, RateLimitConfig, RetryConfig } from '../../../src/types/config';
+import {
+  YahooFinanceError,
+  YF_ERR_CIRCUIT_OPEN,
+  YF_ERR_DATA_UNAVAILABLE,
+  YF_ERR_RATE_LIMIT,
+  YF_ERR_UNKNOWN
+} from '../../../src/types/errors';
 
-describe('Middleware Chain Integration Tests', () => {
-  let rateLimiter: RateLimiter;
-  let circuitBreaker: CircuitBreaker;
-  let cache: Cache;
+const EPOCH = new Date('2026-01-01T00:00:00.000Z');
 
-  const rateLimitConfig: RateLimitConfig = {
-    maxRequests: 10,
-    tokenRefillRate: 1,
-    requestsPerMinute: 10,
-    requestsPerHour: 100
+function advance(ms: number): void {
+  jest.advanceTimersByTime(ms);
+}
+
+const cacheConfig: CacheConfig = {
+  enabled: true,
+  store: 'memory',
+  ttl: 60000,
+  maxEntries: 100
+};
+
+const circuitBreakerConfig: CircuitBreakerConfig = {
+  enabled: true,
+  timeoutMs: 60000,
+  errorThresholdPercentage: 5,
+  resetTimeoutMs: 60000,
+  rollingCountTimeoutMs: 60000,
+  rollingCountBuckets: 10,
+  volumeThreshold: 5,
+  halfOpenMaxAttempts: 3
+};
+
+const rateLimitConfig: RateLimitConfig = {
+  strategy: 'token-bucket',
+  maxRequests: 50,
+  windowMs: 60000,
+  tokenRefillRate: 100,
+  requestsPerMinute: 1000,
+  requestsPerHour: 10000
+};
+
+const retryConfig: RetryConfig = {
+  enabled: true,
+  maxRetries: 2,
+  initialDelayMs: 10,
+  maxDelayMs: 100,
+  strategy: 'fixed',
+  backoffMultiplier: 2,
+  jitter: false,
+  retryableStatusCodes: [429, 500, 502, 503, 504],
+  retryableErrorCodes: []
+};
+
+type Options = {
+  useCache?: boolean;
+  forceRefresh?: boolean;
+  validate?: boolean;
+};
+
+type DegradationResult<T> = {
+  data: T | null;
+  warnings: unknown[];
+  isPartial: boolean;
+  hasData: boolean;
+};
+
+type Harness = {
+  cache: Cache;
+  breaker: CircuitBreaker;
+  limiter: RateLimiter;
+  retry: RetryPolicy;
+  order: string[];
+  attempts: number;
+  cacheReads: number;
+  cacheWrites: number;
+  run: <T>(cacheKey: string, fn: () => Promise<T>, options?: Options) => Promise<T>;
+  runDegrading: <T>(cacheKey: string, fn: () => Promise<T>, options?: Options) => Promise<DegradationResult<T>>;
+};
+
+// Mirrors YahooFinanceClient.executeWithMiddleware (:855-926): cache pre-check, then
+// CircuitBreaker -> RateLimiter -> RetryPolicy -> fn, with cache.set INSIDE the retried unit.
+function composeMiddlewarePath(h: Harness): Harness['run'] {
+  return async <T>(cacheKey: string, fn: () => Promise<T>, options?: Options): Promise<T> => {
+    const useCache = options?.useCache !== false && h.cache.getConfig().enabled === true;
+
+    if (useCache && options?.forceRefresh !== true) {
+      h.order.push('cache-get');
+      h.cacheReads++;
+      const cached = await h.cache.get<T>(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    }
+
+    return h.breaker.execute(() => {
+      h.order.push('breaker');
+      return h.limiter.execute(() => {
+        h.order.push('limiter');
+        return h.retry.execute(async () => {
+          h.order.push('retry');
+          h.attempts++;
+          try {
+            const result = await fn();
+            h.order.push('fn');
+
+            if (useCache && options?.validate !== false) {
+              h.order.push('cache-set');
+              h.cacheWrites++;
+              await h.cache.set(cacheKey, result);
+            }
+
+            return result;
+          } catch (error) {
+            const classifiedError = classifyError(error);
+
+            if (useCache && classifiedError.isRetryable === true) {
+              h.order.push('cache-fallback-read');
+              h.cacheReads++;
+              const cachedData = await h.cache.get<T>(cacheKey);
+              if (cachedData !== null) {
+                return cachedData;
+              }
+            }
+
+            throw classifiedError;
+          }
+        });
+      }, cacheKey);
+    });
+  };
+}
+
+// Mirrors YahooFinanceClient.executeWithGracefulDegradation (:234-326): the same nesting,
+// but the cache is read for fallback material instead of short-circuiting, and the cache
+// write happens once AFTER the chain rather than inside the retried unit.
+function composeDegradationPath(h: Harness): Harness['runDegrading'] {
+  return async <T>(cacheKey: string, fn: () => Promise<T>, options?: Options): Promise<DegradationResult<T>> => {
+    const useCache = options?.useCache !== false && h.cache.getConfig().enabled === true;
+    let liveData: T | null = null;
+    let cachedData: T | null = null;
+    const warnings: unknown[] = [];
+
+    if (useCache && options?.forceRefresh !== true) {
+      h.order.push('cache-fallback-read');
+      h.cacheReads++;
+      cachedData = await h.cache.get<T>(cacheKey);
+    }
+
+    try {
+      liveData = await h.breaker.execute(() => {
+        h.order.push('breaker');
+        return h.limiter.execute(() => {
+          h.order.push('limiter');
+          return h.retry.execute(() => {
+            h.order.push('retry');
+            h.attempts++;
+            return fn();
+          });
+        }, cacheKey);
+      });
+
+      if (useCache && liveData !== null) {
+        h.order.push('cache-set');
+        h.cacheWrites++;
+        await h.cache.set(cacheKey, liveData);
+      }
+    } catch (error) {
+      const classifiedError = classifyError(error);
+
+      if (cachedData !== null) {
+        warnings.push(classifiedError.message);
+        return { data: cachedData, warnings, isPartial: true, hasData: true };
+      }
+
+      throw classifiedError;
+    }
+
+    return { data: liveData, warnings, isPartial: false, hasData: liveData !== null };
+  };
+}
+
+function makeHarness(): Harness {
+  const h: Harness = {
+    cache: new Cache(cacheConfig),
+    breaker: new CircuitBreaker(circuitBreakerConfig),
+    limiter: new RateLimiter(rateLimitConfig),
+    // The policy takes a delayFn so retries never wait on a real clock.
+    retry: new RetryPolicy(retryConfig, async () => undefined),
+    order: [],
+    attempts: 0,
+    cacheReads: 0,
+    cacheWrites: 0,
+    run: () => Promise.reject(new Error('not wired')),
+    runDegrading: () => Promise.reject(new Error('not wired'))
   };
 
-  const cacheConfig: CacheConfig = {
-    maxEntries: 100,
-    ttl: 60000,
-    enabled: true
-  };
+  h.run = composeMiddlewarePath(h);
+  h.runDegrading = composeDegradationPath(h);
+  return h;
+}
 
-  const circuitBreakerConfig: CircuitBreakerConfig = {
-    errorThresholdPercentage: 5,
-    halfOpenMaxAttempts: 3,
-    resetTimeoutMs: 60000,
-    rollingCountTimeoutMs: 60000
-  };
+// Rebuild the composition after swapping a layer, exactly as the service would.
+function rewire(h: Harness): void {
+  h.run = composeMiddlewarePath(h);
+  h.runDegrading = composeDegradationPath(h);
+}
+
+async function collectFailures(h: Harness, count: number): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    await h.run(`quote:SYM${i}`, async () => {
+      throw new Error('boom');
+    }).catch(() => undefined);
+  }
+}
+
+describe('Middleware Composition Integration Tests', () => {
+  let h: Harness;
+
+  beforeAll(() => {
+    jest.useFakeTimers();
+  });
+
+  afterAll(() => {
+    jest.useRealTimers();
+  });
 
   beforeEach(() => {
-    rateLimiter = new RateLimiter(rateLimitConfig);
-    circuitBreaker = new CircuitBreaker(circuitBreakerConfig);
-    cache = new Cache(cacheConfig);
+    jest.setSystemTime(EPOCH);
+    h = makeHarness();
   });
 
   afterEach(async () => {
-    await cache.clear();
-    rateLimiter.reset();
-    circuitBreaker.reset();
+    await h.cache.clear();
+    h.breaker.reset();
+    h.limiter.reset();
+    h.retry.reset();
   });
 
-  describe('Rate Limiter and Cache Integration', () => {
-    it('should use cached data when rate limited', async () => {
-      await cache.set('test-key', 'cached-value', 60000);
+  describe('No Chain Abstraction Exists', () => {
+    it('should export no chain, composer or use() from src/middleware', () => {
+      const exports = { ...cacheModule, ...breakerModule, ...limiterModule, ...retryModule, ...securityModule };
 
-      const fetchFn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        return 'fetched-value';
-      };
-
-      const cachedValue = await cache.get('test-key');
-
-      expect(cachedValue).toBe('cached-value');
+      expect(exports.MiddlewareChain).toBeUndefined();
+      expect(exports.MiddlewareFunction).toBeUndefined();
+      expect(exports.use).toBeUndefined();
+      expect(exports.compose).toBeUndefined();
     });
 
-    it('should bypass cache when rate limit is not exceeded', async () => {
-      const fetchFn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        return 'fresh-value';
-      };
-
-      const result = await fetchFn();
-
-      expect(result).toBe('fresh-value');
-    });
-
-    it('should update cache after successful rate-limited fetch', async () => {
-      const fetchFn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        return 'new-value';
-      };
-
-      const result = await fetchFn();
-      await cache.set('test-key', result, 60000);
-
-      const cached = await cache.get('test-key');
-
-      expect(cached).toBe('new-value');
-    });
-
-    it('should not update cache on rate-limited failure', async () => {
-      await cache.set('test-key', 'old-value', 60000);
-
-      try {
-        await rateLimiter.execute(async () => {
-          throw new Error('Fetch failed');
-        });
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
-
-      const cached = await cache.get('test-key');
-
-      expect(cached).toBe('old-value');
+    it('should expose each layer only through its own execute()', () => {
+      expect(typeof h.breaker.execute).toBe('function');
+      expect(typeof h.limiter.execute).toBe('function');
+      expect(typeof h.retry.execute).toBe('function');
+      expect(typeof h.cache.get).toBe('function');
+      expect(typeof (h.cache as unknown as { execute?: unknown }).execute).toBe('undefined');
     });
   });
 
-  describe('Circuit Breaker and Rate Limiter Integration', () => {
-    it('should respect rate limiter even when circuit is closed', async () => {
-      let callCount = 0;
-      const fn = async () => {
-        callCount++;
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        return 'success';
-      };
+  describe('Composition Order', () => {
+    it('should run cache pre-check then breaker, limiter, retry and fn', async () => {
+      expect(await h.run('quote:AAPL', async () => 'AAPL')).toBe('AAPL');
 
-      const result = await circuitBreaker.execute(fn);
-
-      expect(result).toBe('success');
-      expect(callCount).toBe(1);
-      expect(circuitBreaker.getState()).toBe('CLOSED');
+      expect(h.order).toEqual(['cache-get', 'breaker', 'limiter', 'retry', 'fn', 'cache-set']);
     });
 
-    it('should open circuit after consecutive failures', async () => {
-      const fn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        throw new Error('Simulated failure');
-      };
+    it('should write the cache inside the retried unit, innermost of all layers', async () => {
+      await h.run('quote:AAPL', async () => 'AAPL');
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await circuitBreaker.execute(fn);
-        } catch (error) {
-          expect(error).toBeInstanceOf(Error);
-        }
-      }
-
-      expect(circuitBreaker.getState()).toBe('OPEN');
+      expect(h.order.indexOf('cache-set')).toBe(h.order.length - 1);
+      expect(h.order.indexOf('cache-set')).toBeGreaterThan(h.order.indexOf('retry'));
+      expect(h.order.indexOf('cache-set')).toBeGreaterThan(h.order.indexOf('limiter'));
+      expect(h.cacheReads).toBe(1);
+      expect(h.cacheWrites).toBe(1);
     });
 
-    it('should not execute rate limiter when circuit is open', async () => {
-      const fn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        throw new Error('Failure');
-      };
+    it('should short-circuit the whole chain on a cache hit', async () => {
+      await h.run('quote:AAPL', async () => 'fresh');
+      h.order = [];
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await circuitBreaker.execute(fn);
-        } catch (error) {
-        }
-      }
-
-      const initialStats = rateLimiter.getStats();
-
-      try {
-        await circuitBreaker.execute(fn);
-      } catch (error) {
-      }
-
-      const finalStats = rateLimiter.getStats();
-
-      expect(circuitBreaker.getState()).toBe('OPEN');
-      expect(finalStats.concurrentRequests).toBe(initialStats.concurrentRequests);
+      expect(await h.run('quote:AAPL', async () => 'never-called')).toBe('fresh');
+      expect(h.order).toEqual(['cache-get']);
+      expect(h.attempts).toBe(1);
+      expect(h.limiter.getStats().totalRequests).toBe(1);
     });
 
-    it('should transition to half-open after timeout', async () => {
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+    it('should bypass the pre-check on forceRefresh but still write', async () => {
+      await h.run('quote:AAPL', async () => 'fresh');
+      h.order = [];
 
-      const fn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        throw new Error('Failure');
-      };
-
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(fn);
-        } catch (error) {
-        }
-      }
-
-      expect(cb.getState()).toBe('OPEN');
-
-      await new Promise(resolve => setTimeout(resolve, 150));
-
-      expect(cb.getState()).toBe('HALF_OPEN');
+      expect(await h.run('quote:AAPL', async () => 'refreshed', { forceRefresh: true })).toBe('refreshed');
+      expect(h.order).toEqual(['breaker', 'limiter', 'retry', 'fn', 'cache-set']);
+      expect(h.cacheReads).toBe(1);
     });
 
-    it('should close circuit after successful half-open attempts', async () => {
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100,
-        successThreshold: 2
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+    it('should neither read nor write when the cache is disabled for the call', async () => {
+      expect(await h.run('quote:AAPL', async () => 'fresh', { useCache: false })).toBe('fresh');
 
-      const failFn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        throw new Error('Failure');
-      };
+      expect(h.order).toEqual(['breaker', 'limiter', 'retry', 'fn']);
+      expect(h.cacheWrites).toBe(0);
+      expect(await h.cache.get('quote:AAPL')).toBeNull();
+    });
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
-        }
-      }
+    it('should skip the write when validate is false', async () => {
+      expect(await h.run('quote:AAPL', async () => 'fresh', { validate: false })).toBe('fresh');
 
-      expect(cb.getState()).toBe('OPEN');
+      expect(h.order).toEqual(['cache-get', 'breaker', 'limiter', 'retry', 'fn']);
+      expect(await h.cache.get('quote:AAPL')).toBeNull();
+    });
 
-      await new Promise(resolve => setTimeout(resolve, 150));
+    it('should match TTL prefixes singularly, so a plural key falls back to config.ttl', async () => {
+      // getTTLForType (:420-427) prefix-matches 'quote'/'historical'/'financial'/'news'/
+      // 'analysis'. A key typed quotes:... never matches and silently gets config.ttl.
+      await h.cache.set('quote:AAPL', 'a');
+      await h.cache.set('quotes:AAPL', 'b');
 
-      const successFn = async () => {
-        await rateLimiter.acquire();
-        rateLimiter.release();
-        return 'success';
-      };
+      expect((await h.cache.getEntry('quote:AAPL'))?.ttl).toBe(60000);
+      expect((await h.cache.getEntry('quotes:AAPL'))?.ttl).toBe(60000);
 
-      await cb.execute(successFn);
-      await cb.execute(successFn);
+      advance(60000);
 
-      expect(cb.getState()).toBe('CLOSED');
+      await expect(h.cache.get('quote:AAPL')).resolves.toBeNull();
+      await expect(h.cache.get('quotes:AAPL')).resolves.toBeNull();
     });
   });
 
-  describe('Cache and Circuit Breaker Integration', () => {
-    it('should return cached data when circuit is open', async () => {
-      await cache.set('test-key', 'cached-value', 60000);
+  describe('Retry Lives Inside the Rate Limiter', () => {
+    it('should acquire the limiter once for many attempts', async () => {
+      let calls = 0;
 
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
-
-      const failFn = async () => {
-        throw new Error('API failure');
-      };
-
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
+      const result = await h.run('quote:AAPL', async () => {
+        calls++;
+        if (calls < 3) {
+          throw new Error('boom');
         }
-      }
+        return 'eventual';
+      });
 
-      expect(cb.getState()).toBe('OPEN');
+      expect(result).toBe('eventual');
+      expect(calls).toBe(3);
+      expect(h.attempts).toBe(3);
 
-      const cached = await cache.get('test-key');
+      const stats = h.limiter.getStats();
+      expect(stats.totalRequests).toBe(1);
+      expect(stats.availableTokens).toBeCloseTo(rateLimitConfig.maxRequests - 1, 5);
 
-      expect(cached).toBe('cached-value');
+      // Only the surviving attempt writes, so one cache write covers three attempts.
+      expect(h.cacheWrites).toBe(1);
+      expect(h.order.filter((entry) => entry === 'cache-set')).toHaveLength(1);
     });
 
-    it('should not cache results from open circuit', async () => {
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+    it('should stop after maxRetries + 1 attempts and surface the classified error', async () => {
+      let calls = 0;
 
-      const failFn = async () => {
-        throw new Error('API failure');
-      };
+      await expect(
+        h.run('quote:NFLX', async () => {
+          calls++;
+          throw new Error('boom');
+        })
+      ).rejects.toBeInstanceOf(YahooFinanceError);
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
-        }
-      }
-
-      expect(cb.getState()).toBe('OPEN');
-
-      const cached = await cache.get('test-key');
-
-      expect(cached).toBeNull();
+      // shouldRetry's own `attempt > maxRetries` guard fires on the third failure, so the
+      // loop never reaches its `attempt <= maxRetries + 1` bound and
+      // MaxRetriesExceededError is unreachable from this path.
+      expect(calls).toBe(3);
+      expect(h.retry.attempt).toBe(2);
+      expect(h.retry.retryHistory).toHaveLength(2);
     });
 
-    it('should update cache after circuit closes', async () => {
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100,
-        successThreshold: 1
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+    it('should re-read the cache on every failed attempt', async () => {
+      await expect(
+        h.run('quote:MSFT', async () => {
+          throw new Error('boom');
+        })
+      ).rejects.toThrow('Unknown error');
 
-      const failFn = async () => {
-        throw new Error('API failure');
-      };
+      // One pre-check plus one fallback read per failed attempt.
+      expect(h.cacheReads).toBe(4);
+      expect(h.order.filter((entry) => entry === 'cache-fallback-read')).toHaveLength(3);
+    });
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
-        }
-      }
+    it('should reach the inner cache fallback only when the pre-check is skipped', async () => {
+      await h.cache.set('quote:GOOGL', 'stale-value');
 
-      expect(cb.getState()).toBe('OPEN');
+      // With the pre-check active the same key answers the same way twice, so the fallback
+      // read inside the retried unit can only repeat the pre-check's verdict. This run
+      // returns from the pre-check without ever entering the chain.
+      expect(await h.run('quote:GOOGL', async () => 'fresh')).toBe('stale-value');
+      expect(h.attempts).toBe(0);
+      expect(h.order).toEqual(['cache-get']);
 
-      await new Promise(resolve => setTimeout(resolve, 150));
+      // forceRefresh skips the pre-check, which is the one route that reaches the in-catch
+      // read and gets a different answer there than it got above.
+      h.order = [];
+      const result = await h.run('quote:GOOGL', async () => {
+        throw new Error('boom');
+      }, { forceRefresh: true });
 
-      const successFn = async () => {
-        return 'success-value';
-      };
+      expect(result).toBe('stale-value');
+      expect(h.attempts).toBe(1);
+      expect(h.order).toContain('cache-fallback-read');
 
-      const result = await cb.execute(successFn);
-      await cache.set('test-key', result, 60000);
+      // The fallback return resolves the retried unit, so the breaker books a success and
+      // adds no failure for the fetch that actually broke.
+      expect(h.breaker.getMetrics()).toEqual({ failureCount: 0, successCount: 1 });
+    });
 
-      expect(cb.getState()).toBe('CLOSED');
+    it('should retry an unknown error because classifyError marks it retryable', async () => {
+      const classified = classifyError(new Error('boom'));
 
-      const cached = await cache.get('test-key');
+      expect(classified.code).toBe(YF_ERR_UNKNOWN);
+      expect(classified.isRetryable).toBe(true);
 
-      expect(cached).toBe('success-value');
+      let calls = 0;
+      await h.run('quote:AMZN', async () => {
+        calls++;
+        throw new Error('boom');
+      }).catch(() => undefined);
+
+      expect(calls).toBe(3);
+    });
+
+    it('should not retry a non-retryable classification', async () => {
+      let calls = 0;
+
+      await expect(
+        h.run('quote:TSLA', async () => {
+          calls++;
+          throw new YahooFinanceError(
+            'Data unavailable',
+            YF_ERR_DATA_UNAVAILABLE,
+            null,
+            false,
+            false,
+            {},
+            'Check the symbol'
+          );
+        })
+      ).rejects.toThrow('Data unavailable');
+
+      expect(calls).toBe(1);
+    });
+
+    it('should let skipRetry end the loop on the first failure', async () => {
+      h.retry = new RetryPolicy(
+        { ...retryConfig, skipRetry: () => true },
+        async () => undefined
+      );
+      rewire(h);
+
+      let calls = 0;
+      await expect(
+        h.run('quote:DIS', async () => {
+          calls++;
+          throw new Error('boom');
+        })
+      ).rejects.toThrow('Unknown error');
+
+      expect(calls).toBe(1);
     });
   });
 
-  describe('Full Middleware Chain', () => {
-    it('should execute in correct order: cache -> circuit breaker -> rate limiter', async () => {
-      const executionOrder: string[] = [];
+  describe('Circuit Breaker Wraps Everything Below It', () => {
+    it('should short-circuit before the limiter once the breaker is open', async () => {
+      await collectFailures(h, 5);
 
-      const fetchFn = async () => {
-        executionOrder.push('fetch');
-        return 'result';
-      };
+      expect(h.breaker.getState()).toBe('OPEN');
 
-      const wrappedFetch = async () => {
-        const cached = await cache.get('test-key');
-        if (cached) {
-          executionOrder.push('cache-hit');
-          return cached;
-        }
-        executionOrder.push('cache-miss');
+      const before = h.limiter.getStats();
+      const attemptsBefore = h.attempts;
 
-        const result = await circuitBreaker.execute(async () => {
-          executionOrder.push('circuit-breaker');
-          return await rateLimiter.execute(fetchFn, 'test-endpoint');
-        });
+      await expect(h.run('quote:AAPL', async () => 'AAPL')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
 
-        await cache.set('test-key', result, 60000);
-        return result;
-      };
-
-      const result = await wrappedFetch();
-
-      expect(result).toBe('result');
-      expect(executionOrder).toEqual(['cache-miss', 'circuit-breaker', 'fetch']);
+      expect(h.attempts).toBe(attemptsBefore);
+      expect(h.limiter.getStats().totalRequests).toBe(before.totalRequests);
+      expect(h.limiter.getStats().availableTokens).toBeCloseTo(before.availableTokens, 5);
     });
 
-    it('should use cached value on subsequent calls', async () => {
-      await cache.set('test-key', 'cached-result', 60000);
+    it('should reject a throttled request before the retried unit ever runs', async () => {
+      h.limiter = new RateLimiter({ ...rateLimitConfig, requestsPerMinute: 1 });
+      rewire(h);
 
-      const executionOrder: string[] = [];
+      await expect(h.run('quote:AAPL', async () => 'AAPL')).rejects.toMatchObject({
+        name: 'RateLimitError',
+        code: YF_ERR_RATE_LIMIT
+      });
 
-      const fetchFn = async () => {
-        executionOrder.push('fetch');
-        return 'fresh-result';
-      };
-
-      const wrappedFetch = async () => {
-        const cached = await cache.get('test-key');
-        if (cached) {
-          executionOrder.push('cache-hit');
-          return cached;
-        }
-        executionOrder.push('cache-miss');
-
-        const result = await circuitBreaker.execute(async () => {
-          executionOrder.push('circuit-breaker');
-          return await rateLimiter.execute(fetchFn, 'test-endpoint');
-        });
-
-        await cache.set('test-key', result, 60000);
-        return result;
-      };
-
-      const result1 = await wrappedFetch();
-      const result2 = await wrappedFetch();
-
-      expect(result1).toBe('cached-result');
-      expect(result2).toBe('cached-result');
-      expect(executionOrder).toEqual(['cache-hit', 'cache-hit']);
+      // The limiter's own window check sits outside the retried unit, so a throttled request
+      // is refused once, retried zero times, and counted as one breaker failure.
+      expect(h.attempts).toBe(0);
+      expect(h.limiter.getStats().rejectedRequests).toBe(1);
+      expect(h.breaker.getMetrics().failureCount).toBe(1);
+      expect(h.breaker.getState()).toBe('CLOSED');
     });
 
-    it('should handle circuit open with cache fallback', async () => {
-      await cache.set('test-key', 'cached-value', 60000);
+    it('should never re-acquire the limiter across retries of a failing fetch', async () => {
+      h.limiter = new RateLimiter({ ...rateLimitConfig, maxRequests: 50, tokenRefillRate: 0.001 });
+      rewire(h);
 
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+      let calls = 0;
+      await expect(
+        h.run('quote:MSFT', async () => {
+          calls++;
+          throw new Error('boom');
+        })
+      ).rejects.toThrow('Unknown error');
 
-      const failFn = async () => {
-        throw new Error('API failure');
-      };
-
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
-        }
-      }
-
-      expect(cb.getState()).toBe('OPEN');
-
-      const cached = await cache.get('test-key');
-
-      expect(cached).toBe('cached-value');
+      // Three attempts, one grant: the retries consume no further tokens, so a retry loop is
+      // invisible to the throttle even though it multiplies the upstream load.
+      expect(calls).toBe(3);
+      expect(h.limiter.getStats().totalRequests).toBe(1);
+      expect(h.limiter.getStats().availableTokens).toBeCloseTo(49, 3);
+      expect(h.limiter.getStats().rejectedRequests).toBe(0);
     });
 
-    it('should handle rate limit with circuit protection', async () => {
-      const tightLimitConfig = {
-        ...rateLimitConfig,
-        maxRequests: 2
-      };
-      const rl = new RateLimiter(tightLimitConfig);
-
-      let callCount = 0;
-      const fetchFn = async () => {
-        callCount++;
-        if (callCount > 2) {
-          throw new Error('Rate limit exceeded');
-        }
-        return `result-${callCount}`;
-      };
-
-      const results = [];
+    it('should open the breaker after five throttled requests', async () => {
+      h.limiter = new RateLimiter({ ...rateLimitConfig, requestsPerMinute: 1 });
+      rewire(h);
 
       for (let i = 0; i < 5; i++) {
-        try {
-          const result = await circuitBreaker.execute(async () => {
-            return await rl.execute(fetchFn, 'test-endpoint');
-          });
-          results.push(result);
-        } catch (error) {
-          results.push('error');
-        }
+        await h.run(`quote:SYM${i}`, async () => `r${i}`).catch(() => undefined);
       }
 
-      expect(results).toContain('error');
+      expect(h.breaker.getState()).toBe('OPEN');
+      expect(h.breaker.getMetrics().failureCount).toBe(5);
+    });
+
+    it('should let the breaker probe again once its timeout elapses', async () => {
+      await collectFailures(h, 5);
+
+      expect(h.breaker.getState()).toBe('OPEN');
+
+      advance(circuitBreakerConfig.resetTimeoutMs);
+
+      // halfOpenMaxAttempts 3 means three clean probes before it closes again.
+      for (let i = 0; i < 2; i++) {
+        expect(await h.run(`probe:${i}`, async () => 'ok')).toBe('ok');
+      }
+      expect(h.breaker.getState()).toBe('HALF_OPEN');
+
+      expect(await h.run('probe:2', async () => 'ok')).toBe('ok');
+      expect(h.breaker.getState()).toBe('CLOSED');
+    });
+
+    it('should exit the retry loop immediately on a breaker rejection', async () => {
+      h.breaker = new CircuitBreaker({ ...circuitBreakerConfig, errorThresholdPercentage: 1 });
+      rewire(h);
+
+      await h.breaker.execute(async () => {
+        throw new Error('trip');
+      }).catch(() => undefined);
+
+      expect(h.breaker.getState()).toBe('OPEN');
+
+      const attemptsBefore = h.attempts;
+      await expect(h.run('quote:AAPL', async () => 'AAPL')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+
+      expect(h.attempts).toBe(attemptsBefore);
+    });
+
+    it('should keep the breaker rejection distinguishable from a throttle', async () => {
+      h.breaker = new CircuitBreaker({ ...circuitBreakerConfig, errorThresholdPercentage: 1 });
+      rewire(h);
+
+      await h.breaker.execute(async () => {
+        throw new Error('trip');
+      }).catch(() => undefined);
+
+      const error = (await h.run('quote:AAPL', async () => 'AAPL').catch((e: unknown) => e)) as YahooFinanceError;
+
+      expect(error).toBeInstanceOf(CircuitBreakerOpenError);
+      expect(error.code).toBe(YF_ERR_CIRCUIT_OPEN);
+      expect(error.isRateLimit).toBe(false);
+      expect(error.isRetryable).toBe(false);
     });
   });
 
-  describe('Middleware State Coordination', () => {
-    it('should provide consistent stats across all middleware', async () => {
-      await cache.set('test-key', 'value', 60000);
+  describe('The Two Compositions Differ', () => {
+    it('should write once after the chain in the degradation path', async () => {
+      let calls = 0;
 
-      const cacheStats = cache.getStats();
-      const rateStats = rateLimiter.getStats();
-      const cbState = circuitBreaker.getState();
+      const result = await h.runDegrading('quote:AAPL', async () => {
+        calls++;
+        if (calls < 3) {
+          throw new Error('boom');
+        }
+        return 'eventual';
+      });
+
+      expect(result).toEqual({ data: 'eventual', warnings: [], isPartial: false, hasData: true });
+      expect(calls).toBe(3);
+      expect(h.order).toEqual([
+        'cache-fallback-read',
+        'breaker',
+        'limiter',
+        'retry',
+        'retry',
+        'retry',
+        'cache-set'
+      ]);
+      expect(h.cacheWrites).toBe(1);
+    });
+
+    it('should read the cache first as fallback material, not as a short-circuit', async () => {
+      await h.cache.set('quote:AAPL', 'stale');
+      h.order = [];
+
+      let calls = 0;
+      const result = await h.runDegrading('quote:AAPL', async () => {
+        calls++;
+        throw new Error('boom');
+      });
+
+      // Unlike executeWithMiddleware, a hit does NOT skip the network: the cached value is
+      // only retained in case the chain fails.
+      expect(calls).toBe(3);
+      expect(result).toEqual({ data: 'stale', warnings: ['Unknown error'], isPartial: true, hasData: true });
+      expect(h.order[0]).toBe('cache-fallback-read');
+      expect(h.order).not.toContain('cache-set');
+    });
+
+    it('should rethrow when neither live nor cached data exists', async () => {
+      await expect(
+        h.runDegrading('quote:AAPL', async () => {
+          throw new Error('boom');
+        })
+      ).rejects.toMatchObject({ name: 'YahooFinanceError', message: 'Unknown error' });
+
+      expect(h.breaker.getMetrics().failureCount).toBe(1);
+    });
+
+    it('should skip the fallback read on forceRefresh in both paths', async () => {
+      h.order = [];
+
+      await h.runDegrading('quote:AAPL', async () => 'fresh', { forceRefresh: true });
+
+      expect(h.order).toEqual(['breaker', 'limiter', 'retry', 'cache-set']);
+    });
+  });
+
+  describe('State Coordination', () => {
+    it('should expose stats from the layers that have them', async () => {
+      await h.run('quote:AAPL', async () => 'AAPL');
+
+      const cacheStats = h.cache.getStats();
+      const limiterStats = h.limiter.getStats();
 
       expect(cacheStats.entries).toBe(1);
       expect(cacheStats.hits).toBe(0);
-      expect(cacheStats.misses).toBe(0);
-      expect(rateStats.concurrentRequests).toBe(0);
-      expect(cbState).toBe('CLOSED');
+      expect(cacheStats.misses).toBe(1);
+      expect(limiterStats.concurrentRequests).toBe(0);
+      expect(limiterStats.totalRequests).toBe(1);
+      expect(h.breaker.getState()).toBe('CLOSED');
+      expect(h.breaker.getMetrics()).toEqual({ failureCount: 0, successCount: 1 });
     });
 
-    it('should reset all middleware consistently', async () => {
-      await cache.set('test-key', 'value', 60000);
+    it('should reset every layer consistently', async () => {
+      await h.run('quote:AAPL', async () => 'AAPL');
+      await h.run('quote:MSFT', async () => {
+        throw new Error('boom');
+      }).catch(() => undefined);
 
-      await rateLimiter.execute(async () => {
-        throw new Error('Failure');
-      }, 'test-endpoint');
+      await h.cache.clear();
+      h.limiter.reset();
+      h.breaker.reset();
+      h.retry.reset();
 
-      const failFn = async () => {
-        throw new Error('Failure');
-      };
+      expect(h.cache.getStats().entries).toBe(0);
+      expect(h.limiter.getStats().totalRequests).toBe(0);
+      expect(h.breaker.getState()).toBe('CLOSED');
+      expect(h.retry.attempt).toBe(0);
+      expect(h.retry.retryHistory).toEqual([]);
+    });
 
-      for (let i = 0; i < 10; i++) {
-        try {
-          await circuitBreaker.execute(failFn);
-        } catch (error) {
-        }
-      }
+    it('should serve a new request after every layer is reset', async () => {
+      await h.run('quote:AAPL', async () => 'AAPL');
 
-      await cache.clear();
-      rateLimiter.reset();
-      circuitBreaker.reset();
+      await h.cache.clear();
+      h.limiter.reset();
+      h.breaker.reset();
+      h.retry.reset();
 
-      const cacheStats = cache.getStats();
-      const rateStats = rateLimiter.getStats();
-      const cbState = circuitBreaker.getState();
-
-      expect(cacheStats.entries).toBe(0);
-      expect(rateStats.concurrentRequests).toBe(0);
-      expect(cbState).toBe('CLOSED');
+      expect(await h.run('quote:MSFT', async () => 'MSFT')).toBe('MSFT');
     });
   });
 
   describe('Error Propagation', () => {
-    it('should propagate rate limit errors through circuit breaker', async () => {
-      const tightLimitConfig = {
-        ...rateLimitConfig,
-        maxRequests: 1
-      };
-      const rl = new RateLimiter(tightLimitConfig);
-
-      await rl.execute(async () => 'success', 'test-endpoint');
-
+    it('should surface the classified error, not the raw one, after retries are spent', async () => {
       await expect(
-        circuitBreaker.execute(async () => {
-          return await rl.execute(async () => 'result', 'test-endpoint');
+        h.run('quote:AAPL', async () => {
+          throw new Error('boom');
         })
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({
+        name: 'YahooFinanceError',
+        message: 'Unknown error',
+        code: YF_ERR_UNKNOWN
+      });
     });
 
-    it('should propagate circuit open errors', async () => {
-      const shortTimeoutConfig = {
-        ...circuitBreakerConfig,
-        resetTimeoutMs: 100
-      };
-      const cb = new CircuitBreaker(shortTimeoutConfig);
+    it('should map a persistent throttle onto the rate-limit error shape', async () => {
+      h.limiter = new RateLimiter({ ...rateLimitConfig, requestsPerMinute: 1 });
+      rewire(h);
 
-      const failFn = async () => {
-        throw new Error('API failure');
-      };
-
-      for (let i = 0; i < 10; i++) {
-        try {
-          await cb.execute(failFn);
-        } catch (error) {
-        }
-      }
-
-      expect(cb.getState()).toBe('OPEN');
-
-      await expect(cb.execute(failFn)).rejects.toThrow();
+      await expect(h.run('quote:MSFT', async () => 'MSFT')).rejects.toMatchObject({
+        name: 'RateLimitError',
+        code: YF_ERR_RATE_LIMIT,
+        statusCode: 429,
+        isRetryable: true,
+        isRateLimit: true
+      });
     });
 
-    it('should handle cache errors gracefully', async () => {
-      const errorFn = async () => {
-        throw new Error('Cache error');
-      };
+    it('should propagate a caller error that no layer recognises', async () => {
+      await expect(
+        h.run('quote:AAPL', async () => {
+          throw new RangeError('out of range');
+        })
+      ).rejects.toThrow('Unknown error');
 
-      await expect(cache.get('test-key')).resolves.not.toThrow();
-
-      await cache.set('test-key', 'value', 60000);
-
-      const result = await cache.get('test-key');
-
-      expect(result).toBe('value');
+      expect(h.breaker.getMetrics().failureCount).toBe(1);
+      expect(h.limiter.getStats().concurrentRequests).toBe(0);
     });
   });
 });

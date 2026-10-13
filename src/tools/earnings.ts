@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { EarningsResult, EarningsChart, EarningsTrend } from '../types/yahoo-finance.js';
+import type { EarningsResult, EarningsTrend } from '../types/yahoo-finance.js';
 import { YahooFinanceClient } from '../services/yahoo-finance.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
 import { InputValidator } from '../utils/security.js';
@@ -49,7 +49,7 @@ export class EarningsTools {
   }
 
   registerTools(server: Server): void {
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    server.setRequestHandler(ListToolsRequestSchema, () => ({
       tools: [
         {
           name: 'get_earnings',
@@ -84,14 +84,15 @@ export class EarningsTools {
       const { name, arguments: args } = request.params;
 
       if (name === 'get_earnings') {
-        return await this.getEarnings(args);
+        const result = await this.getEarnings(args);
+        return result;
       }
 
       throw new Error(`Unknown tool: ${name}`);
     });
   }
 
-  public async getEarnings(args: unknown) {
+  public async getEarnings(args: unknown): Promise<EarningsOutput> {
     const input = z.object({
       symbol: z.string().min(1).max(20),
       limit: z.number().int().min(1).max(20).optional().default(12),
@@ -287,7 +288,7 @@ export class EarningsTools {
       const t = data.trends[i];
       flat[`trend_${i}_period`] = t.period;
       flat[`trend_${i}_growth`] = t.growth;
-      if (t.earningsEstimate) {
+      if (t.earningsEstimate !== undefined) {
         flat[`trend_${i}_epsEstimate`] = t.earningsEstimate.avg;
         flat[`trend_${i}_epsAnalysts`] = t.earningsEstimate.numberOfAnalysts;
       }
@@ -305,7 +306,7 @@ export class EarningsTools {
       warnings.push('Partial data available (<80% completeness)');
     }
 
-    if (!data.earningsDate) {
+    if (data.earningsDate === null || data.earningsDate === '') {
       warnings.push('Earnings date not available');
     }
 

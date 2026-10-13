@@ -204,7 +204,7 @@ export class QuoteTools {
       fields,
       forceRefresh,
       timeout,
-      useCache: !forceRefresh
+      useCache: forceRefresh !== true
     };
 
     let quoteResult: QuoteResult;
@@ -491,8 +491,9 @@ export class QuoteTools {
       warnings.push('Partial data available (<80% completeness)');
     }
 
-    const price = quote.price;
-    if (price) {
+    // Declared non-optional, but the wire omits `price` on partial quotes.
+    const price: PriceData | null | undefined = quote.price;
+    if (price !== undefined && price !== null) {
       if (price.regularMarketPrice === null || price.regularMarketPrice === undefined) {
         warnings.push('Missing current price');
       }
@@ -556,12 +557,12 @@ export class QuoteTools {
     return undefined;
   }
 
-  private async getFromCache<T>(key: string): Promise<T | null> {
+  private getFromCache<T>(key: string): Promise<T | null> {
     const cache = this.yahooClient as unknown as { cache?: { get<T>(key: string): T | null } };
-    if (cache.cache && typeof cache.cache.get === 'function') {
-      return cache.cache.get<T>(key);
+    if (cache.cache !== undefined && typeof cache.cache.get === 'function') {
+      return Promise.resolve(cache.cache.get<T>(key));
     }
-    return null;
+    return Promise.resolve(null);
   }
 
   private delay(ms: number): Promise<void> {

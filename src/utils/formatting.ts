@@ -124,7 +124,7 @@ export function calculateRSI(prices: number[], period: number = 14): number[] {
   let avgLoss = losses / period;
 
   if (avgLoss === 0) {
-    return new Array(prices.length - period).fill(100);
+    return Array.from<number>({ length: prices.length - period }).fill(100);
   }
 
   let rs = avgGain / avgLoss;

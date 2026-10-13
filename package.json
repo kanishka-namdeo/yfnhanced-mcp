@@ -18,6 +18,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "test": "jest",
+    "test:live": "jest --config jest.live.config.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "lint": "eslint .",
@@ -27,8 +28,8 @@
     "clean": "node -e \"const fs = require('fs'); if (fs.existsSync('dist')) { fs.rmSync('dist', { recursive: true, force: true }); }\"",
     "prepublishOnly": "npm run clean && npm run build && npm run readme:npm",
     "prepack": "npm run build",
-    "readme:npm": "node -e \"const fs = require('fs'); fs.copyFileSync('README.npm.md', 'README.md');\"",
-    "readme:github": "node -e \"const fs = require('fs'); fs.copyFileSync('README.github.md', 'README.md');\""
+    "readme:npm": "node -e \"const fs = require('fs'); fs.copyFileSync('NPM-README.md', 'README.md');\"",
+    "readme:github": "node -e \"const fs = require('fs'); fs.copyFileSync('GITHUB-README.md', 'README.md');\""
   },
   "keywords": [
     "mcp",

@@ -14,40 +14,48 @@ export class SecurityMiddleware {
     this.suspiciousPatterns = new Map();
   }
 
-  async validateInput(input: unknown, context: string): Promise<boolean> {
-    if (!this.config.enableInputValidation) {
-      return true;
-    }
+  // Promise executor runs the body synchronously and converts validator throws into rejections, matching `async`.
+  validateInput(input: unknown, context: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      if (!this.config.enableInputValidation) {
+        resolve(true);
+        return;
+      }
 
-    if (typeof input === 'string') {
-      InputValidator.validateString(input, context);
-    } else if (Array.isArray(input)) {
-      for (const item of input) {
-        if (typeof item === 'string') {
-          InputValidator.validateString(item, context);
+      if (typeof input === 'string') {
+        InputValidator.validateString(input, context);
+      } else if (Array.isArray(input)) {
+        for (const item of input) {
+          if (typeof item === 'string') {
+            InputValidator.validateString(item, context);
+          }
+        }
+      } else if (typeof input === 'object' && input !== null) {
+        for (const [key, value] of Object.entries(input)) {
+          if (typeof value === 'string') {
+            InputValidator.validateString(value, key);
+          }
         }
       }
-    } else if (typeof input === 'object' && input !== null) {
-      for (const [key, value] of Object.entries(input)) {
-        if (typeof value === 'string') {
-          InputValidator.validateString(value, key);
-        }
-      }
-    }
 
-    return true;
+      resolve(true);
+    });
   }
 
-  async sanitizeOutput<T>(data: T): Promise<T> {
-    if (!this.config.enableOutputSanitization) {
-      return data;
-    }
+  sanitizeOutput<T>(data: T): Promise<T> {
+    return new Promise<T>((resolve) => {
+      if (!this.config.enableOutputSanitization) {
+        resolve(data);
+        return;
+      }
 
-    if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
-      return DataSanitizer.sanitizeQuoteData(data as Record<string, unknown>) as T;
-    }
+      if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
+        resolve(DataSanitizer.sanitizeQuoteData(data as Record<string, unknown>) as T);
+        return;
+      }
 
-    return data;
+      resolve(data);
+    });
   }
 
   sanitizeError(error: unknown): string {
@@ -57,12 +65,12 @@ export class SecurityMiddleware {
     return error instanceof Error ? error.message : String(error);
   }
 
-  async validateCacheKey(key: string): Promise<boolean> {
+  validateCacheKey(key: string): Promise<boolean> {
     try {
       CacheValidator.validateCacheKey(key);
-      return true;
+      return Promise.resolve(true);
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
   }
 
@@ -81,28 +89,33 @@ export class SecurityMiddleware {
     this.blockedIPs.delete(identifier);
   }
 
-  async checkRateLimit(identifier: string, maxRequests: number, windowMs: number): Promise<boolean> {
-    const now = Date.now();
-    const record = this.requestCounts.get(identifier);
+  // Executor keeps the counter mutation synchronous, as the `async` body was.
+  checkRateLimit(identifier: string, maxRequests: number, windowMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const now = Date.now();
+      const record = this.requestCounts.get(identifier);
 
-    if (!record || now > record.resetTime) {
-      this.requestCounts.set(identifier, {
-        count: 1,
-        resetTime: now + windowMs
-      });
-      return true;
-    }
+      if (!record || now > record.resetTime) {
+        this.requestCounts.set(identifier, {
+          count: 1,
+          resetTime: now + windowMs
+        });
+        resolve(true);
+        return;
+      }
 
-    if (record.count >= maxRequests) {
-      return false;
-    }
+      if (record.count >= maxRequests) {
+        resolve(false);
+        return;
+      }
 
-    record.count++;
-    return true;
+      record.count++;
+      resolve(true);
+    });
   }
 
   recordSuspiciousActivity(pattern: string): void {
-    const current = this.suspiciousPatterns.get(pattern) || 0;
+    const current = this.suspiciousPatterns.get(pattern) ?? 0;
     this.suspiciousPatterns.set(pattern, current + 1);
 
     if (current + 1 >= 5) {

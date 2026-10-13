@@ -181,7 +181,7 @@ YF_MCP_RATE_LIMIT_REQUESTS_PER_MINUTE=30 YF_MCP_CIRCUIT_BREAKER_FAILURE_THRESHOL
 
 > **Known defect:** `config.json` is parsed, validated, and then **overwritten by defaults** before the server uses it, so file values have no effect. `.yaml` and `.yml` are not supported at all — the loader reaches for a `js-yaml` package that is not a dependency, and the failure is swallowed into a warning. Both are tracked in [`src/config/AGENTS.md`](src/config/AGENTS.md). The precedence bug is a one-function fix and a pull request would be very welcome.
 
-Every knob that reaches runtime, and the longer list that is read but does nothing, is enumerated in [`src/config/AGENTS.md`](src/config/AGENTS.md). Full reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and [`README.config.md`](README.config.md).
+Every knob that reaches runtime, and the longer list that is read but does nothing, is enumerated in [`src/config/AGENTS.md`](src/config/AGENTS.md). Full reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and [`CONFIG-README.md`](CONFIG-README.md).
 
 ---
 
@@ -243,7 +243,7 @@ Honest list, current as of 2026-10-13:
 - **The verification gate is red.** `npm run lint` fails with ~790 errors and `npm test` fails 45 of 52 suites. `npm run typecheck` and `npm run build` are clean. CI has never run on `master` because the workflow only triggered on `main` and `develop`; that is fixed here, which is what exposed the above.
 - **`config.json` is inert** due to a merge-precedence defect. Use environment variables.
 - **Crypto and forex tools are stubs.** They are registered and callable but return hardcoded values.
-- **stdio only.** No Streamable HTTP or SSE transport; the transport is hardcoded at `src/index.ts:207`.
+- **stdio only.** No Streamable HTTP or SSE transport; the transport is hardcoded at `src/server.ts:208`.
 - **Two middleware instantiations coexist.** The server builds a set for stats and shutdown; the client builds the set that is actually on the request path. Only the client's is exercised.
 - **`winston` is a declared dependency and is imported nowhere.** All diagnostics go to `console.error`, because stdout is the protocol channel.
 - **No cache persistence.** In-memory only; the `redis` and `file` config fields are never read, so a restart is a cold cache.
@@ -260,7 +260,7 @@ Honest list, current as of 2026-10-13:
 | [`docs/USAGE_GUIDE.md`](docs/USAGE_GUIDE.md) | Client integration and worked examples |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Every option, default, and env var |
 | [`docs/DATA_VERIFICATION.md`](docs/DATA_VERIFICATION.md) | Field-level availability truth table |
-| [`README.config.md`](README.config.md) | Extended configuration reference |
+| [`CONFIG-README.md`](CONFIG-README.md) | Extended configuration reference |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, gates, and code style |
 | [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability |
 

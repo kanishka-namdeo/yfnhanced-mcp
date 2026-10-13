@@ -40,7 +40,7 @@ The same block works for Cursor, Cline, Windsurf, and any other MCP client that 
 <details>
 <summary><strong>A note on the two binary names</strong></summary>
 
-This published version installs a `y-finance-mcp` command. A matching `yfnhanced-mcp` alias exists in the repository and takes effect from the next publish. Prefer the `npx` form above: `npx` resolves the package's single binary regardless of its name, so it works today and after the next release.
+The package installs two names for the same stdio server: `y-finance-mcp` and `yfnhanced-mcp`. They are the identical entry point, so pick whichever reads better in your client config. The `npx` form above uses the package name rather than a binary name, which keeps it working if an alias is ever dropped.
 
 </details>
 

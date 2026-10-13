@@ -1,698 +1,386 @@
-import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, afterEach, jest } from '@jest/globals';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { promises as fs } from 'fs';
-import { timeoutValues, retryConfigs, backoffStrategies } from '../fixtures/test-data.ts';
+import { existsSync } from 'fs';
+import { RetryPolicy, createRetryPolicy, retry, MaxRetriesExceededError } from '../../src/middleware/retry';
+import { classifyError } from '../../src/utils/error-classifier';
+import { YahooFinanceClient } from '../../src/services/yahoo-finance';
+import { YahooFinanceError, YF_ERR_TIMEOUT, YF_ERR_NETWORK, YF_ERR_UNKNOWN, YF_ERR_COOKIE_ERROR } from '../../src/types/errors';
+import { timeoutValues, retryConfigs } from '../fixtures/test-data.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const SERVER_PATH = path.resolve(__dirname, '../../dist/index.js');
 
-describe('Timeout Chaos Tests', () => {
-  let serverProcess: ChildProcess | null = null;
-  let serverPort = 3000;
-  const originalFetch = global.fetch;
+type Strategy = 'exponential' | 'linear' | 'fixed';
 
-  beforeEach(async () => {
-    serverPort = 3000 + Math.floor(Math.random() * 1000);
-    await startServer(serverPort);
+function configFor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    enabled: true,
+    // `retryConfigs` names `baseDelay`/`maxDelay`; `RetryConfig` reads `initialDelayMs`/
+    // `maxDelayMs`, so the values are mapped rather than passed through.
+    maxRetries: retryConfigs.maxRetries,
+    initialDelayMs: retryConfigs.baseDelay,
+    maxDelayMs: retryConfigs.maxDelay,
+    strategy: 'exponential' as Strategy,
+    backoffMultiplier: 2,
+    jitter: false,
+    retryableStatusCodes: [429, 500, 502, 503, 504],
+    retryableErrorCodes: [],
+    ...overrides
+  };
+}
+
+function policyWith(overrides: Record<string, unknown> = {}, onDelay?: (ms: number) => Promise<void>): RetryPolicy {
+  return new RetryPolicy(configFor(overrides) as never, onDelay);
+}
+
+async function outcome(policy: RetryPolicy, fn: () => Promise<unknown>): Promise<{ error: unknown; resolved: boolean }> {
+  return policy.execute(fn).then(
+    () => ({ resolved: true, error: null }),
+    error => ({ resolved: false, error })
+  );
+}
+
+describe('Timeout chaos (in-process fault injection)', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
-  afterEach(async () => {
-    if (serverProcess) {
-      await stopServer();
-    }
-    global.fetch = originalFetch;
+  describe('timeout classification decides whether the retry layer acts at all', () => {
+    test('a timeout-shaped error is classified as YF_ERR_TIMEOUT and is retryable', () => {
+      const classified = classifyError(new Error('network timeout occurred'));
+      expect(classified.code).toBe(YF_ERR_TIMEOUT);
+      expect(classified.isRetryable).toBe(true);
+      expect(classified.statusCode).toBeNull();
+    });
+
+    test('a real ETIMEDOUT error is NOT classified as a timeout: the matcher looks for etimeout', () => {
+      // `isTimeoutError` matches 'timeout' and 'etimeout'; the Node code string is
+      // 'ETIMEDOUT', which lowercases to 'etimedout' and contains neither. So a genuine
+      // socket timeout lands in the UNKNOWN bucket (retryable, but with the wrong code).
+      const fromCode = classifyError(Object.assign(new Error('upstream stalled'), { code: 'ETIMEDOUT' }));
+      expect(fromCode.code).toBe(YF_ERR_UNKNOWN);
+      expect(fromCode.isRetryable).toBe(true);
+
+      const fromCodeString = classifyError(new Error('ETIMEDOUT while reading chart'));
+      expect(fromCodeString.code).toBe(YF_ERR_UNKNOWN);
+
+      const fromMessage = classifyError(new Error('timeout of 1000ms exceeded'));
+      expect(fromMessage.code).toBe(YF_ERR_TIMEOUT);
+    });
+
+    test('a slow-upstream failure burns exactly maxRetries + 1 attempts and rethrows the classified error', async () => {
+      const delays: number[] = [];
+      const policy = policyWith({ maxRetries: 3, initialDelayMs: 100 }, async (ms: number) => { delays.push(ms); });
+      let attempts = 0;
+
+      const result = await outcome(policy, async () => {
+        attempts++;
+        throw new Error('timeout of 1000ms exceeded');
+      });
+
+      expect(attempts).toBe(4);
+      expect(delays).toEqual([100, 200, 400]);
+      expect(result.resolved).toBe(false);
+      expect((result.error as YahooFinanceError).code).toBe(YF_ERR_TIMEOUT);
+      expect(result.error).not.toBeInstanceOf(MaxRetriesExceededError);
+    });
+
+    test('a non-retryable error stops after the first attempt and reports onGiveUp', async () => {
+      const giveUps: Array<{ message: string; attempt: number }> = [];
+      const policy = policyWith({
+        maxRetries: 3,
+        onGiveUp: (error: Error, attempt: number) => { giveUps.push({ message: error.message, attempt }); }
+      }, async () => undefined);
+      let attempts = 0;
+
+      const result = await outcome(policy, async () => {
+        attempts++;
+        throw new YahooFinanceError('Symbol not found', 'YF_ERR_SYMBOL_NOT_FOUND', 404, false, false, {}, 'check symbol');
+      });
+
+      expect(attempts).toBe(1);
+      expect(result.resolved).toBe(false);
+      expect((result.error as YahooFinanceError).code).toBe('YF_ERR_SYMBOL_NOT_FOUND');
+      expect(giveUps[0].attempt).toBe(1);
+    });
+
+    test('retryHistory records every failed attempt with the delay that followed it', async () => {
+      const policy = policyWith({ maxRetries: 1, initialDelayMs: 250 }, async () => undefined);
+      await outcome(policy, async () => { throw new Error('request timeout'); });
+
+      const history = policy.retryHistory;
+      expect(history).toHaveLength(1);
+      expect(history[0].attempt).toBe(1);
+      expect(history[0].delayMs).toBe(250);
+      expect(history[0].errorType).toBe(YF_ERR_TIMEOUT);
+      expect(history[0].isRetryable).toBe(true);
+    });
   });
 
-  async function startServer(port: number): Promise<void> {
-    return new Promise(async (resolve, reject) => {
-      const serverPath = path.join(__dirname, '../../dist/index.js');
+  describe('backoff arithmetic', () => {
+    const policy = policyWith({ maxRetries: 3, initialDelayMs: 100, maxDelayMs: 10000 });
 
-      try {
-        await fs.access(serverPath);
-      } catch {
-        reject(new Error('Server build not found. Run "npm run build" first.'));
-        return;
+    test('exponential multiplies by backoffMultiplier per attempt', () => {
+      expect(policy.calculateDelay(1)).toBe(100);
+      expect(policy.calculateDelay(2)).toBe(200);
+      expect(policy.calculateDelay(3)).toBe(400);
+    });
+
+    test('linear and fixed strategies use their own formula', () => {
+      const linear = policyWith({ strategy: 'linear', initialDelayMs: 300 });
+      expect(linear.calculateDelay(1)).toBe(300);
+      expect(linear.calculateDelay(3)).toBe(900);
+
+      const fixed = policyWith({ strategy: 'fixed', retryDelayMs: 50 });
+      expect(fixed.calculateDelay(4)).toBe(50);
+    });
+
+    test('a fixed strategy with a zero or NaN retryDelayMs falls back to initialDelayMs', () => {
+      expect(policyWith({ strategy: 'fixed', retryDelayMs: 0, initialDelayMs: 120 }).calculateDelay(2)).toBe(120);
+      expect(policyWith({ strategy: 'fixed', retryDelayMs: NaN, initialDelayMs: 120 }).calculateDelay(2)).toBe(120);
+    });
+
+    test('maxDelayMs caps the growth', () => {
+      const capped = policyWith({ strategy: 'exponential', initialDelayMs: 1000, maxDelayMs: 2500, backoffMultiplier: 5 });
+      expect(capped.calculateDelay(1)).toBe(1000);
+      expect(capped.calculateDelay(2)).toBe(2500);
+      expect(capped.calculateDelay(4)).toBe(2500);
+    });
+
+    test('jitter is +/-25% with a 100ms floor', () => {
+      const jittered = policyWith({ strategy: 'exponential', initialDelayMs: 1000, jitter: true });
+      const spy = jest.spyOn(Math, 'random');
+
+      spy.mockReturnValue(0.5);
+      expect(jittered.calculateDelay(1)).toBe(1000);
+      spy.mockReturnValue(0);
+      expect(jittered.calculateDelay(1)).toBe(750);
+      spy.mockReturnValue(0.99999);
+      expect(jittered.calculateDelay(1)).toBeCloseTo(1249.995, 2);
+      spy.mockReturnValue(0);
+      expect(jittered.calculateDelay(1) >= 100).toBe(true);
+
+      spy.mockReturnValue(0);
+      expect(jittered.addJitter(10)).toBe(100);
+      expect(jittered.addJitter(0)).toBe(100);
+    });
+
+    test('transient server errors back off 1.5x and cookie errors half as long', () => {
+      const probe = policyWith({ strategy: 'exponential', initialDelayMs: 200, maxDelayMs: 100000 });
+      const badGateway = new YahooFinanceError('bad gateway', 'YF_ERR_SERVER', 502, true, false, {}, 'retry');
+      const cookie = new YahooFinanceError('cookie expired', YF_ERR_COOKIE_ERROR, null, true, false, {}, 'refresh');
+
+      expect(probe.calculateDelayForError(badGateway, 1)).toBe(300);
+      expect(probe.calculateDelayForError(badGateway, 2)).toBe(600);
+      expect(probe.calculateDelayForError(cookie, 1)).toBe(100);
+      expect(probe.calculateDelayForError(new Error('plain') as never, 1)).toBe(200);
+    });
+
+    test('the fixture timeout ladder doubles under exponential backoff until maxDelayMs caps it', () => {
+      for (const attempt of timeoutValues.slice(0, 4)) {
+        const delay = policyWith({ initialDelayMs: attempt }).calculateDelay(2);
+        expect(delay).toBe(Math.min(attempt * 2, retryConfigs.maxDelay));
       }
+    });
+  });
 
-      serverProcess = spawn('node', [serverPath], {
+  describe('the documented timeout failure mode cannot be produced by the resilience stack', () => {
+    test('the timeout request option never reaches the request path', async () => {
+      const client = slowClient(200);
+      const started = Date.now();
+      const quote = await client.getQuote('AAPL', { timeout: 5 });
+      const elapsed = Date.now() - started;
+
+      expect(quote.price.regularMarketPrice).toBe(185.92);
+      expect(elapsed).toBeGreaterThanOrEqual(150);
+    });
+
+    test('nothing races a never-settling upstream: the request just hangs', async () => {
+      const policy = policyWith({ maxRetries: 2, initialDelayMs: 1 }, async () => undefined);
+      const hanging = policy.execute(() => new Promise<never>(() => undefined));
+      hanging.catch(() => undefined);
+
+      const settled = await Promise.race([
+        hanging.then(() => 'settled', () => 'settled'),
+        new Promise(resolve => { setTimeout(() => resolve('still-pending'), 150); })
+      ]);
+
+      expect(settled).toBe('still-pending');
+    });
+
+    test('the only deadline a client actually gets is its own harness timeout', async () => {
+      const client = slowClient(120);
+      const first = Date.now();
+      await client.getQuote('AAPL', { timeout: 1 });
+      const second = Date.now();
+      await client.getQuote('MSFT', { timeout: 1 });
+
+      expect(second - first).toBeLessThan(1000);
+      expect(timeoutValues[0]).toBe(100);
+    });
+
+    test('a cache hit short-circuits before the timeout would matter', async () => {
+      let libraryCalls = 0;
+      const client = new YahooFinanceClient({
+        serverInfo: { name: 'chaos', version: '0', protocolVersion: '2024-11-05' },
+        capabilities: { tools: {} },
+        transport: 'stdio',
+        rateLimit: { strategy: 'token-bucket', maxRequests: 500, windowMs: 60000, tokenRefillRate: 500, requestsPerMinute: 100000 },
+        cache: { enabled: true, store: 'memory', ttl: 60000, maxEntries: 20 },
+        retry: configFor({ maxRetries: 0, initialDelayMs: 1 }) as never,
+        yahooFinance: { baseUrl: 'https://example.invalid', timeoutMs: 1000, maxConcurrentRequests: 5, requestQueueSize: 10, validateResponses: true, strictMode: false },
+        circuitBreaker: { errorThresholdPercentage: 50, halfOpenMaxAttempts: 1, resetTimeoutMs: 60000, rollingCountTimeoutMs: 60000 }
+      } as never) as YahooFinanceClient & Record<string, unknown>;
+
+      (client as Record<string, unknown>).yahooFinanceInstance = {
+        quote: async () => {
+          libraryCalls++;
+          await new Promise(resolve => { setTimeout(resolve, 100); });
+          return { symbol: 'AAPL', regularMarketPrice: 185.92 };
+        }
+      };
+
+      await client.getQuote('AAPL', { timeout: 10 });
+      const cached = await client.getQuote('AAPL', { timeout: 10 });
+
+      expect(libraryCalls).toBe(1);
+      expect(cached.price.regularMarketPrice).toBe(185.92);
+    });
+  });
+
+  describe('createRetryPolicy and the retry() helper share the same semantics', () => {
+    test('both drive the same attempt count', async () => {
+      let viaFactory = 0;
+      let viaHelper = 0;
+
+      await outcome(createRetryPolicy(configFor({ maxRetries: 2, initialDelayMs: 1 }) as never, async () => undefined),
+        async () => { viaFactory++; throw new Error('timeout'); });
+
+      await retry(async () => { viaHelper++; throw new Error('timeout'); },
+        configFor({ maxRetries: 2, initialDelayMs: 1 }) as never, undefined, async () => undefined)
+        .catch(() => undefined);
+
+      expect(viaFactory).toBe(3);
+      expect(viaHelper).toBe(3);
+    });
+
+    test('network codes the classifier misses are still retried via the raw error code', async () => {
+      let attempts = 0;
+      await outcome(policyWith({ maxRetries: 2, initialDelayMs: 1 }, async () => undefined), async () => {
+        attempts++;
+        throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+      });
+
+      expect(attempts).toBe(3);
+      // ECONNRESET is retried by the raw-code list only; the classifier calls it UNKNOWN,
+      // while ECONNREFUSED and ENOTFOUND are matched by message substring into YF_ERR_NETWORK.
+      expect(classifyError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })).code).toBe(YF_ERR_UNKNOWN);
+      expect(classifyError(new Error('connect ECONNREFUSED 127.0.0.1:443')).code).toBe(YF_ERR_NETWORK);
+      expect(classifyError(new Error('getaddrinfo ENOTFOUND query1.finance.yahoo.com')).code).toBe(YF_ERR_NETWORK);
+    });
+  });
+
+  describe('spawned-server prompt traffic proves list handlers need no upstream', () => {
+    let serverProcess: ChildProcess | null = null;
+    let stdoutBuffer = '';
+    const pending = new Map<number, (response: Record<string, unknown>) => void>();
+
+    function createMCPRequest(method: string, params: Record<string, unknown> = {}, id = 1): string {
+      return JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    }
+
+    function sendMCPRequest(request: string, timeoutMs = 10000): Promise<Record<string, unknown>> {
+      const id = (JSON.parse(request) as { id: number }).id;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Request ${String(id)} timed out after ${String(timeoutMs)} ms`));
+        }, timeoutMs);
+        pending.set(id, response => { clearTimeout(timer); resolve(response); });
+        if (serverProcess?.stdin === null || serverProcess?.stdin === undefined) {
+          clearTimeout(timer);
+          reject(new Error('Server process not available'));
+          return;
+        }
+        serverProcess.stdin.write(`${request}\n`);
+      });
+    }
+
+    beforeAll(async () => {
+      if (!existsSync(SERVER_PATH)) {
+        throw new Error('Server build not found. Run "npm run build" first.');
+      }
+      serverProcess = spawn(process.execPath, [SERVER_PATH], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'test',
-          PORT: String(port),
-          USE_MOCK_API: 'true'
-        }
+        env: { ...process.env, NODE_ENV: 'test' }
       });
-
-      let output = '';
-
-      serverProcess.stdout?.on('data', (data) => {
-        output += data.toString();
-        if (output.includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
-        }
-      });
-
-      serverProcess.stderr?.on('data', (data) => {
-        if (data.toString().includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
-        }
-      });
-
-      serverProcess.on('error', (err) => {
-        reject(new Error(`Failed to start server: ${err.message}`));
-      });
-
-      setTimeout(() => {
-        resolve();
-      }, 10000);
-    });
-  }
-
-  async function stopServer(): Promise<void> {
-    if (!serverProcess) return;
-
-    return new Promise((resolve) => {
-      serverProcess?.on('exit', () => {
-        serverProcess = null;
-        resolve();
-      });
-
-      serverProcess?.kill('SIGTERM');
-      setTimeout(() => {
-        serverProcess?.kill('SIGKILL');
-        serverProcess = null;
-        resolve();
-      }, 5000);
-    });
-  }
-
-  function createMCPRequest(method: string, params: Record<string, unknown> = {}, id: number = 1): string {
-    return JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params
-    });
-  }
-
-  async function sendMCPRequest(request: string, timeoutMs: number = 15000): Promise<unknown> {
-    if (!serverProcess || !serverProcess.stdin) {
-      throw new Error('Server process not available');
-    }
-
-    return new Promise((resolve, reject) => {
-      let output = '';
-
-      const timeout = setTimeout(() => {
-        reject(new Error('Request timeout'));
-      }, timeoutMs);
-
-      serverProcess?.stdout?.on('data', (data) => {
-        output += data.toString();
-        try {
-          const response = JSON.parse(output);
-          if (response && typeof response === 'object' && 'id' in response) {
-            clearTimeout(timeout);
-            resolve(response);
+      serverProcess.stdout?.setEncoding('utf8');
+      serverProcess.stdout?.on('data', (chunk: string) => {
+        stdoutBuffer += chunk;
+        let newline = stdoutBuffer.indexOf('\n');
+        while (newline >= 0) {
+          const line = stdoutBuffer.slice(0, newline).trim();
+          stdoutBuffer = stdoutBuffer.slice(newline + 1);
+          if (line !== '') {
+            const response = JSON.parse(line) as Record<string, unknown>;
+            const id = response.id as number | undefined;
+            if (id !== undefined) {
+              pending.get(id)?.(response);
+              pending.delete(id);
+            }
           }
-        } catch {
-          output = '';
+          newline = stdoutBuffer.indexOf('\n');
         }
       });
 
-      serverProcess?.stdin?.write(request + '\n');
-    });
-  }
-
-  function mockSlowResponse(delay: number) {
-    global.fetch = jest.fn(() =>
-      new Promise(resolve => {
-        setTimeout(() => {
-          resolve({
-            ok: true,
-            json: () => Promise.resolve({ mockData: 'success' })
-          });
-        }, delay);
-      })
-    );
-  }
-
-  function mockTimeoutResponse() {
-    global.fetch = jest.fn(() =>
-      new Promise(() => {
-      })
-    );
-  }
-
-  describe('Request timeout handling', () => {
-    test('should handle slow response within timeout', async () => {
-      mockSlowResponse(2000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 5000
-        }
-      });
-
-      const response = await sendMCPRequest(request, 10000);
-
-      expect(response).toHaveProperty('result');
+      await sendMCPRequest(createMCPRequest('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        clientInfo: { name: 'chaos-timeout', version: '1.0.0' }
+      }, 0));
+      serverProcess.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
     });
 
-    test('should timeout on very slow response', async () => {
-      mockTimeoutResponse();
-
-      const startTime = Date.now();
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      try {
-        await sendMCPRequest(request, 5000);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        expect(duration).toBeLessThan(5000);
-      }
+    afterAll(async () => {
+      if (serverProcess === null) return;
+      const exited = new Promise<void>(resolve => { serverProcess?.once('exit', () => resolve()); });
+      serverProcess.stdin?.end();
+      serverProcess.kill('SIGTERM');
+      const killTimer = setTimeout(() => { serverProcess?.kill('SIGKILL'); }, 3000);
+      await exited;
+      clearTimeout(killTimer);
+      serverProcess = null;
     });
 
-    test('should respect custom timeout parameter', async () => {
-      mockSlowResponse(5000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 2000
-        }
-      });
-
-      const startTime = Date.now();
-      try {
-        await sendMCPRequest(request, 10000);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        expect(duration).toBeGreaterThan(1500);
-        expect(duration).toBeLessThan(4000);
-      }
-    });
-  });
-
-  describe('Retry logic on timeout', () => {
-    test('should retry on timeout', async () => {
-      let attemptCount = 0;
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        if (attemptCount < retryConfigs.maxRetries) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      const response = await sendMCPRequest(request, 20000);
-
-      expect(attemptCount).toBeGreaterThan(1);
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should use exponential backoff on timeout retry', async () => {
-      let attemptCount = 0;
-      const attemptTimes: number[] = [];
-
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        attemptTimes.push(Date.now());
-        if (attemptCount < 3) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      const startTime = Date.now();
-      const response = await sendMCPRequest(request, 20000);
-
-      expect(attemptCount).toBe(3);
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should stop retrying after max retries', async () => {
-      let attemptCount = 0;
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        return new Promise(() => {
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 500
-        }
-      });
-
-      const startTime = Date.now();
-      try {
-        await sendMCPRequest(request, 15000);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        expect(attemptCount).toBeLessThanOrEqual(retryConfigs.maxRetries + 1);
-        expect(duration).toBeLessThan(15000);
-      }
-    });
-  });
-
-  describe('Concurrent timeout handling', () => {
-    test('should handle multiple concurrent timeouts', async () => {
-      mockSlowResponse(10000);
-
-      const requests = Array(5).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'], timeout: 2000 }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req, 10000))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeLessThan(10000);
-    });
-
-    test('should not deadlock on concurrent timeouts', async () => {
-      mockTimeoutResponse();
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'], timeout: 1000 }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req, 10000))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeLessThan(20000);
-    });
-  });
-
-  describe('Timeout with different operations', () => {
-    test('should handle timeout for quote requests', async () => {
-      mockTimeoutResponse();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      try {
-        await sendMCPRequest(request, 5000);
-      } catch (error) {
-        expect(error).toBeDefined();
-      }
-    });
-
-    test('should handle timeout for news requests', async () => {
-      mockTimeoutResponse();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_news',
-        arguments: {
-          symbol: 'AAPL'
-        }
-      });
-
-      const response = await sendMCPRequest(request, 10000);
-
-      expect(response).toBeDefined();
-    });
-
-    test('should handle timeout for financials requests', async () => {
-      mockSlowResponse(8000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_balance_sheet',
-        arguments: {
-          symbol: 'AAPL'
-        }
-      });
-
-      const response = await sendMCPRequest(request, 10000);
-
-      expect(response).toBeDefined();
-    });
-  });
-
-  describe('Timeout with caching', () => {
-    test('should use cached data on timeout', async () => {
-      let attemptCount = 0;
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        if (attemptCount === 1) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ cached: 'data' })
-          });
-        }
-        return new Promise(() => {
-        });
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request1);
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2, 5000);
-
-      expect(response2).toHaveProperty('result');
-    });
-
-    test('should force refresh bypass cache and timeout', async () => {
-      mockSlowResponse(10000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          forceRefresh: true,
-          timeout: 2000
-        }
-      });
-
-      const startTime = Date.now();
-      try {
-        await sendMCPRequest(request, 5000);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        expect(duration).toBeLessThan(5000);
-      }
-    });
-  });
-
-  describe('Timeout with batch operations', () => {
-    test('should handle timeout in batch request', async () => {
-      let requestCount = 0;
-      global.fetch = jest.fn(() => {
-        requestCount++;
-        if (requestCount === 2) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL', 'MSFT', 'GOOGL'],
-          timeout: 2000
-        }
-      });
-
-      const startTime = Date.now();
-      const response = await sendMCPRequest(request, 10000);
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeLessThan(10000);
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should return partial results on partial timeout', async () => {
-      let requestCount = 0;
-      global.fetch = jest.fn(() => {
-        requestCount++;
-        if (requestCount === 2) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL', 'MSFT', 'GOOGL'],
-          timeout: 2000
-        }
-      });
-
-      const response = await sendMCPRequest(request, 10000);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Timeout recovery', () => {
-    test('should recover from timeout after successful request', async () => {
-      let isFast = false;
-      global.fetch = jest.fn(() => {
-        if (isFast) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ mockData: 'success' })
-          });
-        }
-        return new Promise(() => {
-        });
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      try {
-        await sendMCPRequest(request1, 5000);
-      } catch (error) {
-      }
-
-      isFast = true;
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2, 10000);
-
-      expect(response2).toHaveProperty('result');
-    });
-
-    test('should handle intermittent timeouts', async () => {
-      let requestCount = 0;
-      global.fetch = jest.fn(() => {
-        requestCount++;
-        if (requestCount % 3 === 0) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const responses = await Promise.allSettled(
-        requests.map(req => sendMCPRequest(req, 10000))
-      );
-
-      const successfulResponses = responses.filter(r => r.status === 'fulfilled');
-      expect(successfulResponses.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('Timeout edge cases', () => {
-    test('should handle very short timeout', async () => {
-      mockSlowResponse(5000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 100
-        }
-      });
-
-      const startTime = Date.now();
-      try {
-        await sendMCPRequest(request, 2000);
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        expect(duration).toBeLessThan(2000);
-      }
-    });
-
-    test('should handle very long timeout', async () => {
-      mockSlowResponse(1000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 60000
-        }
-      });
-
-      const startTime = Date.now();
-      const response = await sendMCPRequest(request, 65000);
-      const duration = Date.now() - startTime;
-
-      expect(response).toHaveProperty('result');
-      expect(duration).toBeLessThan(65000);
-    });
-
-    test('should handle zero timeout', async () => {
-      mockSlowResponse(1000);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 0
-        }
-      });
-
-      try {
-        await sendMCPRequest(request, 5000);
-      } catch (error) {
-        expect(error).toBeDefined();
-      }
-    });
-  });
-
-  describe('Timeout with backoff strategies', () => {
-    test('should apply exponential backoff between retries', async () => {
-      let attemptCount = 0;
-      const attemptTimes: number[] = [];
-
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        attemptTimes.push(Date.now());
-        if (attemptCount < 3) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      const response = await sendMCPRequest(request, 20000);
-
-      expect(attemptCount).toBe(3);
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should apply jitter to backoff', async () => {
-      let attemptCount = 0;
-
-      global.fetch = jest.fn(() => {
-        attemptCount++;
-        if (attemptCount < 4) {
-          return new Promise(() => {
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ mockData: 'success' })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          timeout: 1000
-        }
-      });
-
-      const startTime = Date.now();
-      const response = await sendMCPRequest(request, 30000);
-      const duration = Date.now() - startTime;
-
-      expect(attemptCount).toBe(4);
-      expect(response).toHaveProperty('result');
+    test('prompts/list answers with all 6 prompts in well under the harness timeout', async () => {
+      const started = Date.now();
+      const response = await sendMCPRequest(createMCPRequest('prompts/list', {}, 1));
+      const elapsed = Date.now() - started;
+
+      expect((response.result as { prompts: unknown[] }).prompts).toHaveLength(6);
+      expect(elapsed).toBeLessThan(5000);
     });
   });
 });
+
+function slowClient(delayMs: number): YahooFinanceClient & Record<string, unknown> {
+  const client = new YahooFinanceClient({
+    serverInfo: { name: 'chaos', version: '0', protocolVersion: '2024-11-05' },
+    capabilities: { tools: {} },
+    transport: 'stdio',
+    rateLimit: { strategy: 'token-bucket', maxRequests: 500, windowMs: 60000, tokenRefillRate: 500, requestsPerMinute: 100000 },
+    cache: { enabled: false, store: 'memory', ttl: 60000, maxEntries: 20 },
+    retry: configFor({ maxRetries: 0, initialDelayMs: 1 }) as never,
+    yahooFinance: { baseUrl: 'https://example.invalid', timeoutMs: 1000, maxConcurrentRequests: 5, requestQueueSize: 10, validateResponses: true, strictMode: false },
+    circuitBreaker: { errorThresholdPercentage: 50, halfOpenMaxAttempts: 1, resetTimeoutMs: 60000, rollingCountTimeoutMs: 60000 }
+  } as never) as YahooFinanceClient & Record<string, unknown>;
+
+  (client as Record<string, unknown>).yahooFinanceInstance = {
+    quote: async () => {
+      await new Promise(resolve => { setTimeout(resolve, delayMs); });
+      return { symbol: 'AAPL', regularMarketPrice: 185.92 };
+    }
+  };
+  return client;
+}

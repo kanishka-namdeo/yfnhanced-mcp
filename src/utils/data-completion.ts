@@ -232,7 +232,7 @@ class DataQualityReporter {
 
   private updateFieldHistory(data: Record<string, unknown>, expectedFields: string[]): void {
     for (const field of expectedFields) {
-      if (!this.fieldHistory[field]) {
+      if (!(field in this.fieldHistory)) {
         this.fieldHistory[field] = [];
       }
 
@@ -374,7 +374,7 @@ class DataQualityReporter {
     }
 
     if (typeof a === 'object' && a !== null && b !== null) {
-      const aKeys = Object.keys(a as Record<string, unknown>);
+      const aKeys = Object.keys(a);
       const bKeys = Object.keys(b as Record<string, unknown>);
 
       if (aKeys.length !== bKeys.length) {

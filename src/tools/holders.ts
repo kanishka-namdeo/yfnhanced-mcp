@@ -1,8 +1,8 @@
 import { yahooFinance } from '../services/yahoo-finance.js';
 import { HoldersInputSchema, HoldersOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
-import { DataQualityReporter } from '../utils/data-completion.js';
 import type { Holder, InstitutionalHolder, FundHolder, InsiderHolder, HolderResult } from '../types/yahoo-finance.js';
+import type { ToolDefinition } from '../types/mcp.js';
 import { InputValidator } from '../utils/security.js';
 
 const HOLDERS_CACHE_TTL = 3600000;
@@ -37,23 +37,23 @@ class HoldersToolCache {
   }
 }
 
-function extractNumber(value: unknown): number | null {
+function extractNumber(value: unknown): number {
   if (typeof value === 'number') {return value;}
   if (typeof value === 'object' && value !== null && 'raw' in value) {
     const raw = (value).raw;
-    return typeof raw === 'number' ? raw : null;
+    return typeof raw === 'number' ? raw : 0;
   }
-  return null;
+  return 0;
 }
 
-function extractString(value: unknown): string | null {
+function extractString(value: unknown): string {
   if (typeof value === 'string') {return value;}
   // v4 hands back Date objects for reportDate/lastReported rather than strings.
   if (value instanceof Date) {return value.toISOString();}
   if (typeof value === 'object' && value !== null && 'fmt' in value) {
     return String((value).fmt);
   }
-  return null;
+  return '';
 }
 
 function convertInstitutionalHolder(item: Record<string, unknown>): InstitutionalHolder {
@@ -195,7 +195,7 @@ function buildChangeHistory(
     const date = new Date(baseDate - i * 90 * 24 * 60 * 60 * 1000);
     const shares = Math.floor(position * (1 - i * 0.05));
     const change = i === 0 ? position : shares - history[i - 1].shares;
-    const changePercent = history[i - 1] ? (change / history[i - 1].shares) * 100 : 0;
+    const changePercent = i > 0 ? (change / history[i - 1].shares) * 100 : 0;
 
     history.push({
       date: date.toISOString().split('T')[0],
@@ -543,7 +543,7 @@ export async function getMajorHoldersTool(
   return HoldersOutputSchema.parse(output);
 }
 
-export function getHoldersToolDefinitions() {
+export function getHoldersToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'get_major_holders',

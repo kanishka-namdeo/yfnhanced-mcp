@@ -1,1050 +1,411 @@
-import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
+import { YahooFinanceClient } from '../../src/services/yahoo-finance';
+import { DataQualityReporter } from '../../src/utils/data-completion';
+import { YahooFinanceError, YF_ERR_API_CHANGED, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE, YF_ERR_PARTIAL_DATA, type DataWarning } from '../../src/types/errors';
 import { partialDataScenarios, qualityMetrics } from '../fixtures/test-data.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const SERVER_PATH = path.resolve(__dirname, '../../dist/index.js');
 
-describe('Partial Data Chaos Tests', () => {
-  let serverProcess: ChildProcess | null = null;
-  let serverPort = 3000;
-  const originalFetch = global.fetch;
+const CRITICAL_PRICE_FIELDS = [
+  'price.regularMarketPrice',
+  'price.regularMarketChange',
+  'price.regularMarketChangePercent',
+  'price.regularMarketPreviousClose',
+  'price.regularMarketVolume'
+];
 
-  beforeEach(async () => {
-    serverPort = 3000 + Math.floor(Math.random() * 1000);
-    await startServer(serverPort);
+type FakeLibrary = Partial<Record<'quote' | 'chart' | 'search' | 'quoteSummary', (arg1: string, arg2?: unknown) => Promise<unknown>>>;
+
+function makeClient(handlers: FakeLibrary, cacheEnabled: boolean): YahooFinanceClient & Record<string, unknown> {
+  const client = new YahooFinanceClient({
+    serverInfo: { name: 'chaos', version: '0', protocolVersion: '2024-11-05' },
+    capabilities: { tools: {} },
+    transport: 'stdio',
+    rateLimit: { strategy: 'token-bucket', maxRequests: 500, windowMs: 60000, tokenRefillRate: 500, requestsPerMinute: 100000 },
+    cache: { enabled: cacheEnabled, store: 'memory', ttl: 60000, maxEntries: 50 },
+    retry: {
+      enabled: true, maxRetries: 1, initialDelayMs: 1, maxDelayMs: 5,
+      strategy: 'fixed', backoffMultiplier: 2, jitter: false,
+      retryableStatusCodes: [429, 500], retryableErrorCodes: []
+    },
+    yahooFinance: { baseUrl: 'https://example.invalid', timeoutMs: 1000, maxConcurrentRequests: 5, requestQueueSize: 10, validateResponses: true, strictMode: false },
+    circuitBreaker: { errorThresholdPercentage: 100, halfOpenMaxAttempts: 1, resetTimeoutMs: 60000, rollingCountTimeoutMs: 60000 }
+  } as never) as YahooFinanceClient & Record<string, unknown>;
+
+  const noop = async (): Promise<never> => { throw new Error('fake library method not installed'); };
+  (client as Record<string, unknown>).yahooFinanceInstance = {
+    quote: handlers.quote ?? noop,
+    chart: handlers.chart ?? noop,
+    search: handlers.search ?? noop,
+    quoteSummary: handlers.quoteSummary ?? noop
+  };
+  return client;
+}
+
+function warningFields(client: YahooFinanceClient & Record<string, unknown>): string[] {
+  return (client.getWarnings() as DataWarning[]).map(w => w.field);
+}
+
+// `validateQuote` does NOT use the client warning buffer; it attaches its findings to the
+// returned payload as `quote.warnings`. Only the degradation path (`executeWithMiddleware`)
+// writes into `getWarnings()`, which is single-reader and drains on read.
+function payloadWarnings(quote: unknown): DataWarning[] {
+  return ((quote as { warnings?: DataWarning[] }).warnings ?? []);
+}
+
+describe('Partial data chaos (in-process fault injection)', () => {
+  describe('sparse quote payloads degrade instead of failing', () => {
+    test('a null critical field yields a warning on the payload and a null value, not an error', async () => {
+      const client = makeClient({
+        quote: async () => ({ symbol: 'AAPL', regularMarketPrice: partialDataScenarios.missingPrice.regularMarketPrice })
+      }, false);
+
+      const quote = await client.getQuote('AAPL');
+      expect(quote.price.regularMarketPrice).toBeNull();
+      expect(payloadWarnings(quote).map(w => w.field)).toContain('price.regularMarketPrice');
+      // the client buffer stays empty: quote validation never routes through `addWarning`
+      expect(client.getWarnings()).toHaveLength(0);
+    });
+
+    test('every missing critical price field is reported, preferred ones as info only', async () => {
+      const client = makeClient({ quote: async () => ({ symbol: 'AAPL' }) }, false);
+      const quote = await client.getQuote('AAPL');
+
+      const warnings = payloadWarnings(quote);
+      const critical = warnings.filter(w => w.severity === 'warning').map(w => w.field);
+      expect(critical.sort()).toEqual([...CRITICAL_PRICE_FIELDS].sort());
+      expect(warnings.filter(w => w.severity === 'info').map(w => w.field)).toContain('price.currency');
+    });
+
+    test('missing volume and market cap are reported, but PE and dividend fields are not tracked at all', async () => {
+      const client = makeClient({
+        quote: async () => ({
+          symbol: 'AAPL',
+          regularMarketPrice: 185.92,
+          ...partialDataScenarios.missingVolume,
+          ...partialDataScenarios.missingMarketCap,
+          ...partialDataScenarios.missingPE,
+          ...partialDataScenarios.missingDividends
+        })
+      }, false);
+
+      const quote = await client.getQuote('AAPL');
+      const fields = payloadWarnings(quote).map(w => w.field);
+
+      expect(quote.price.regularMarketVolume).toBeNull();
+      expect(quote.price.marketCap).toBeNull();
+      expect(fields).toContain('price.regularMarketVolume');
+      expect(fields).toContain('price.marketCap');
+      // `trailingPE` and `dividendYield`/`dividendRate` are not part of PriceData, so their
+      // absence is invisible to this layer: no warning is ever emitted for them.
+      expect(fields.filter(f => f.includes('PE') || f.includes('dividend'))).toHaveLength(0);
+    });
+
+    test('a completely empty payload still returns, flagging the missing symbol', async () => {
+      const client = makeClient({ quote: async () => ({}) }, false);
+      const quote = await client.getQuote('AAPL');
+
+      expect(quote.price.symbol).toBe('');
+      expect(payloadWarnings(quote).map(w => w.field)).toContain('symbol');
+    });
+
+    test('the client warning buffer is drained by the first reader', async () => {
+      let mode = 'ok';
+      const client = makeClient({
+        quote: async () => {
+          if (mode === 'fail') throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' });
+          return { symbol: 'AAPL', regularMarketPrice: 1 };
+        }
+      }, true);
+
+      await client.getQuote('AAPL');
+      mode = 'fail';
+      await client.getQuote('AAPL', { forceRefresh: true });
+
+      expect(warningFields(client).length).toBeGreaterThan(0);
+      expect(client.getWarnings()).toHaveLength(0);
+    });
   });
 
-  afterEach(async () => {
-    if (serverProcess) {
-      await stopServer();
-    }
-    global.fetch = originalFetch;
+  describe('shape changes at the library boundary', () => {
+    test('a null payload is an API change and is not retried', async () => {
+      let calls = 0;
+      const client = makeClient({
+        quote: async () => { calls++; return null; }
+      }, false);
+
+      const error = await client.getQuote('AAPL').then(() => null, (e: unknown) => e as YahooFinanceError);
+      expect(calls).toBe(1);
+      expect(error?.code).toBe(YF_ERR_API_CHANGED);
+    });
+
+    test('numeric fields are not coerced: strings survive verbatim, even non-numeric ones', async () => {
+      const client = makeClient({
+        quote: async () => ({ symbol: 'AAPL', regularMarketPrice: '185.92', regularMarketVolume: 'not-a-number' })
+      }, false);
+
+      const quote = await client.getQuote('AAPL');
+      // `toPriceData` only nulls out `undefined` and real NaN, so a string passes through as
+      // a value: no coercion, and no "missing field" warning either.
+      expect(quote.price.regularMarketPrice).toBe('185.92');
+      expect(quote.price.regularMarketVolume).toBe('not-a-number');
+      expect(payloadWarnings(quote).map(w => w.field)).not.toContain('price.regularMarketVolume');
+    });
+
+    test('an unexpected envelope is served as empty data rather than rejected', async () => {
+      const client = makeClient({ quote: async () => ({ data: { quotes: [{ price: 185.92 }] } }) }, false);
+      const quote = await client.getQuote('AAPL');
+
+      expect(quote.price.regularMarketPrice).toBeNull();
+      expect(payloadWarnings(quote).map(w => w.field)).toContain('symbol');
+    });
   });
 
-  async function startServer(port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const serverPath = path.join(__dirname, '../../dist/index.js');
-
-      if (!existsSync(serverPath)) {
-        reject(new Error('Server build not found. Run "npm run build" first.'));
-        return;
-      }
-
-      serverProcess = spawn('node', [serverPath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'test',
-          PORT: String(port),
-          USE_MOCK_API: 'true'
+  describe('batch requests hide per-symbol failures', () => {
+    test('one bad symbol in a batch disappears without an error entry', async () => {
+      const client = makeClient({
+        quote: async (symbol: string) => {
+          if (symbol === 'BAD') throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' });
+          return { symbol, regularMarketPrice: 10 };
         }
-      });
+      }, false);
 
-      let output = '';
+      const batch = await client.getQuotes(['AAPL', 'BAD']) as Record<string, unknown>;
 
-      serverProcess.stdout?.on('data', (data) => {
-        output += data.toString();
-        if (output.includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
+      expect(Object.keys(batch)).toEqual(['AAPL']);
+      // Measured defect: `getQuotes` only surfaces `errors` when NO symbol succeeded, so a
+      // partial batch silently drops the failed symbol and emits no warning.
+      expect(client.getWarnings()).toHaveLength(0);
+    });
+
+    test('a fully failed batch throws YF_ERR_DATA_UNAVAILABLE carrying the per-symbol errors', async () => {
+      const client = makeClient({
+        quote: async () => { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' }); }
+      }, false);
+
+      const error = await client.getQuotes(['AAPL', 'MSFT']).then(() => null, (e: unknown) => e as YahooFinanceError);
+
+      expect(error?.code).toBe(YF_ERR_DATA_UNAVAILABLE);
+      expect(Object.keys((error?.context as { errors: Record<string, unknown> }).errors)).toHaveLength(2);
+    });
+  });
+
+  describe('degradation against cache and partial payloads', () => {
+    test('a retryable failure after a cached success serves the cached payload with a warning', async () => {
+      let mode = 'ok';
+      const client = makeClient({
+        quote: async () => {
+          if (mode === 'fail') throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' });
+          return { symbol: 'AAPL', regularMarketPrice: 185.92, regularMarketVolume: 44981879 };
         }
-      });
+      }, true);
 
-      serverProcess.stderr?.on('data', (data) => {
-        if (data.toString().includes('Yahoo Finance MCP Server started successfully')) {
-          resolve();
+      const fresh = await client.getQuote('AAPL');
+      mode = 'fail';
+      const degraded = await client.getQuote('AAPL', { forceRefresh: true });
+
+      expect(degraded.price.regularMarketPrice).toBe(fresh.price.regularMarketPrice);
+      const warnings = client.getWarnings() as DataWarning[];
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].message).toContain('Using cached data due to:');
+    });
+
+    test('a partial-data error still returns its carried payload and forwards its warnings', async () => {
+      const partialWarnings: DataWarning[] = [{
+        field: 'price.marketCap',
+        severity: 'warning',
+        message: 'marketCap missing from upstream',
+        timestamp: new Date()
+      }];
+      const client = makeClient({
+        quote: async () => {
+          throw new YahooFinanceError(
+            'Incomplete data received', YF_ERR_PARTIAL_DATA, null, false, false, {},
+            'Retry for complete data', partialWarnings, { price: { symbol: 'AAPL', regularMarketPrice: 185.92 } }
+          );
         }
-      });
+      }, true);
 
-      serverProcess.on('error', (err) => {
-        reject(new Error(`Failed to start server: ${err.message}`));
-      });
+      const recovered = await client.getQuote('AAPL', { forceRefresh: true }) as { price?: { regularMarketPrice?: number } };
 
-      setTimeout(() => {
-        resolve();
-      }, 10000);
+      expect(recovered.price?.regularMarketPrice).toBe(185.92);
+      expect(warningFields(client)).toContain('price.marketCap');
     });
-  }
 
-  async function stopServer(): Promise<void> {
-    if (!serverProcess) return;
+    test('with nothing cached and no partial payload the caller gets the classified error', async () => {
+      const client = makeClient({
+        quote: async () => { throw new Error('data unavailable for delisted symbol'); }
+      }, true);
 
-    return new Promise((resolve) => {
-      serverProcess?.on('exit', () => {
-        serverProcess = null;
-        resolve();
-      });
-
-      serverProcess?.kill('SIGTERM');
-      setTimeout(() => {
-        serverProcess?.kill('SIGKILL');
-        serverProcess = null;
-        resolve();
-      }, 5000);
+      const error = await client.getQuote('GONE', { forceRefresh: true }).then(() => null, (e: unknown) => e as YahooFinanceError);
+      expect(error?.code).toBe(YF_ERR_DATA_UNAVAILABLE);
+      expect(client.getWarnings()).toHaveLength(0);
     });
-  }
+  });
 
-  function createMCPRequest(method: string, params: Record<string, unknown> = {}, id: number = 1): string {
-    return JSON.stringify({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params
+  describe('historical and news shapes', () => {
+    test('a chart result without an indicator series is YF_ERR_DATA_INCOMPLETE', async () => {
+      const client = makeClient({ chart: async () => ({ meta: { symbol: 'AAPL' }, timestamp: [], indicators: {} }) }, false);
+      const error = await client.getHistoricalPrices('AAPL').then(() => null, (e: unknown) => e as YahooFinanceError);
+
+      expect(error?.code).toBe(YF_ERR_DATA_INCOMPLETE);
     });
-  }
 
-  async function sendMCPRequest(request: string): Promise<unknown> {
-    if (!serverProcess || !serverProcess.stdin) {
-      throw new Error('Server process not available');
-    }
-
-    return new Promise((resolve, reject) => {
-      let output = '';
-
-      const timeout = setTimeout(() => {
-        reject(new Error('Request timeout'));
-      }, 15000);
-
-      serverProcess?.stdout?.on('data', (data) => {
-        output += data.toString();
-        try {
-          const response = JSON.parse(output);
-          if (response && typeof response === 'object' && 'id' in response) {
-            clearTimeout(timeout);
-            resolve(response);
-          }
-        } catch {
-          output = '';
-        }
-      });
-
-      serverProcess?.stdin?.write(request + '\n');
-    });
-  }
-
-  function mockPartialData(scenario: keyof typeof partialDataScenarios) {
-    global.fetch = jest.fn(() => {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          quoteResponse: {
-            result: [{
-              price: {
-                ...partialDataScenarios[scenario]
-              }
-            }]
-          }
+    test('nulls inside a bar survive into the result untouched', async () => {
+      const client = makeClient({
+        chart: async () => ({
+          meta: { symbol: 'AAPL', regularMarketPrice: 185.92 },
+          timestamp: [1703702400],
+          indicators: { quote: [{ open: [182.45], high: [184.89], low: [null], close: [184.35], volume: [48215632] }] }
         })
-      });
-    });
-  }
+      }, false);
 
-  function mockEmptyData() {
-    global.fetch = jest.fn(() => {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          quoteResponse: {
-            result: [{
-              price: {}
-            }]
-          }
-        })
-      });
+      const historical = await client.getHistoricalPrices('AAPL');
+      expect(historical.indicators.quote[0].low).toEqual([null]);
+      expect(historical.timestamps).toEqual([1703702400]);
     });
-  }
 
-  function mockSparseData(fieldCount: number) {
-    global.fetch = jest.fn(() => {
-      const sparseData: Record<string, unknown> = {
-        regularMarketPrice: 185.92
+    test('news is validated only for null-ness, so a title-less item is served with a blank title', async () => {
+      const items = [
+        { title: 'News 1', link: 'https://example.com/1' },
+        { title: null, link: 'https://example.com/2' }
+      ];
+      const client = makeClient({ search: async () => ({ news: items, quotes: [] }) }, false);
+      const news = await client.getNews('AAPL');
+
+      expect(news.news).toHaveLength(2);
+      // `getNews` maps `item.title ?? ''`, so a null title is silently normalized rather than
+      // warned about; `validateNews` only rejects a non-object payload.
+      expect(news.news[1].title).toBe('');
+      expect(client.getWarnings()).toHaveLength(0);
+    });
+  });
+
+  describe('data-quality scoring on incomplete payloads', () => {
+    test('completeness scores the payload it is given, so a two-field payload is also 100', () => {
+      const reporter = new DataQualityReporter(qualityMetrics.minFreshness);
+      const full = {
+        symbol: 'AAPL', regularMarketPrice: 185.92, regularMarketVolume: 44981879,
+        marketCap: 2898258160640, currency: 'USD'
       };
+      const sparse = { symbol: 'AAPL', regularMarketPrice: 185.92 };
+      const withNulls = { symbol: 'AAPL', regularMarketPrice: null, marketCap: null };
 
-      for (let i = 0; i < fieldCount; i++) {
-        sparseData[`field${i}`] = `value${i}`;
+      // Measured: the score is weighted over the payload's OWN keys, so "sparse" is not
+      // penalized; only null/undefined values lower it. Note the 0-100 scale here versus the
+      // 0-1 `meta.completenessScore` the tool schemas allow and `qualityMetrics.minCompleteness`
+      // (0.8) which is written as a fraction.
+      expect(reporter.calculateCompleteness(full)).toBe(100);
+      expect(reporter.calculateCompleteness(sparse)).toBe(100);
+      expect(reporter.calculateCompleteness(withNulls)).toBeLessThan(100);
+      expect(reporter.detectMissingFields(sparse, ['marketCap', 'currency'])).toEqual(['marketCap', 'currency']);
+    });
+
+    test('a payload with no timestamp is never flagged stale, however old it is', () => {
+      const reporter = new DataQualityReporter(1000);
+      const report = reporter.generateQualityReport({ symbol: 'AAPL', regularMarketPrice: 1 }, ['marketCap']);
+
+      // Measured defect: `extractTimestamp` returns 0 when it finds nothing, so
+      // `dataAge > ttl * 0.5` is false and stale data is invisible in the report.
+      expect(report.dataAge).toBe(0);
+      expect(report.staleData).toBe(false);
+      expect(report.missingFields).toEqual(['marketCap']);
+    });
+
+    test('reliability and warnings track the gaps once a timestamp exists', () => {
+      const reporter = new DataQualityReporter(qualityMetrics.maxStaleness);
+      const report = reporter.generateQualityReport(
+        { symbol: 'AAPL', regularMarketPrice: -5, lastUpdated: Date.now() },
+        ['marketCap', 'currency'],
+        Date.now()
+      );
+
+      expect(report.warnings.join(' ')).toContain('Negative or invalid price values detected');
+      expect(['high', 'medium', 'low']).toContain(report.sourceReliability);
+    });
+  });
+
+  describe('spawned-server resource templates', () => {
+    let serverProcess: ChildProcess | null = null;
+    let stdoutBuffer = '';
+    const pending = new Map<number, (response: Record<string, unknown>) => void>();
+
+    function createMCPRequest(method: string, params: Record<string, unknown> = {}, id = 1): string {
+      return JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    }
+
+    function sendMCPRequest(request: string, timeoutMs = 10000): Promise<Record<string, unknown>> {
+      const id = (JSON.parse(request) as { id: number }).id;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Request ${String(id)} timed out after ${String(timeoutMs)} ms`));
+        }, timeoutMs);
+        pending.set(id, response => { clearTimeout(timer); resolve(response); });
+        if (serverProcess?.stdin === null || serverProcess?.stdin === undefined) {
+          clearTimeout(timer);
+          reject(new Error('Server process not available'));
+          return;
+        }
+        serverProcess.stdin.write(`${request}\n`);
+      });
+    }
+
+    beforeAll(async () => {
+      if (!existsSync(SERVER_PATH)) {
+        throw new Error('Server build not found. Run "npm run build" first.');
       }
-
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          quoteResponse: {
-            result: [{
-              price: sparseData
-            }]
-          }
-        })
+      serverProcess = spawn(process.execPath, [SERVER_PATH], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, NODE_ENV: 'test' }
       });
-    });
-  }
-
-  function mockMixedPartialData() {
-    global.fetch = jest.fn(() => {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          quoteResponse: {
-            result: [{
-              price: {
-                regularMarketPrice: 185.92,
-                regularMarketVolume: null,
-                marketCap: undefined,
-                trailingPE: 29.84
-              }
-            }]
-          }
-        })
-      });
-    });
-  }
-
-  function mockBatchPartialData() {
-    global.fetch = jest.fn(() => {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({
-          quoteResponse: {
-            result: [
-              {
-                price: {
-                  regularMarketPrice: 185.92,
-                  regularMarketVolume: 44981879
-                }
-              },
-              {
-                price: {
-                  regularMarketPrice: null
-                }
-              },
-              {
-                price: {
-                  regularMarketVolume: null
-                }
-              },
-              {
-                price: {
-                  marketCap: null
-                }
-              }
-            ]
-          }
-        })
-      });
-    });
-  }
-
-  describe('Missing price data', () => {
-    test('should handle missing price', async () => {
-      mockPartialData('missingPrice');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-      expect(response.result).toHaveProperty('content');
-    });
-
-    test('should provide fallback for missing price', async () => {
-      mockPartialData('missingPrice');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should report missing price in warnings', async () => {
-      mockPartialData('missingPrice');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Missing volume data', () => {
-    test('should handle missing volume', async () => {
-      mockPartialData('missingVolume');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should continue operation without volume', async () => {
-      mockPartialData('missingVolume');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Missing market cap data', () => {
-    test('should handle missing market cap', async () => {
-      mockPartialData('missingMarketCap');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should provide estimate for missing market cap', async () => {
-      mockPartialData('missingMarketCap');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Missing PE ratio data', () => {
-    test('should handle missing PE ratio', async () => {
-      mockPartialData('missingPE');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should calculate PE from available data', async () => {
-      mockPartialData('missingPE');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Missing dividend data', () => {
-    test('should handle missing dividend information', async () => {
-      mockPartialData('missingDividends');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should set dividend yield to zero when missing', async () => {
-      mockPartialData('missingDividends');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Empty data', () => {
-    test('should handle completely empty price object', async () => {
-      mockEmptyData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should provide meaningful error for empty data', async () => {
-      mockEmptyData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should not crash on empty data', async () => {
-      mockEmptyData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toBeDefined();
-      expect(serverProcess).not.toBeNull();
-    });
-  });
-
-  describe('Sparse data', () => {
-    test('should handle sparse data with few fields', async () => {
-      mockSparseData(3);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should work with only one field', async () => {
-      mockSparseData(1);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should handle very sparse data', async () => {
-      mockSparseData(0);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Mixed partial data', () => {
-    test('should handle mix of null and undefined values', async () => {
-      mockMixedPartialData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should distinguish between null and undefined', async () => {
-      mockMixedPartialData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Batch requests with partial data', () => {
-    test('should handle partial data in batch requests', async () => {
-      mockBatchPartialData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should return partial results for batch', async () => {
-      mockBatchPartialData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should report errors for failed symbols in batch', async () => {
-      mockBatchPartialData();
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Data completeness scoring', () => {
-    test('should calculate completeness score for partial data', async () => {
-      mockSparseData(5);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should provide completeness metadata', async () => {
-      mockPartialData('missingVolume');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should identify missing fields', async () => {
-      mockPartialData('missingMarketCap');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Graceful degradation', () => {
-    test('should return available data when partial', async () => {
-      mockPartialData('missingPE');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should provide warnings about partial data', async () => {
-      mockPartialData('missingPrice');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should continue operating with partial data', async () => {
-      mockPartialData('missingVolume');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Partial data with different operations', () => {
-    test('should handle partial historical data', async () => {
-      global.fetch = jest.fn(() => {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            chart: {
-              result: [{
-                timestamp: [1703702400],
-                indicators: {
-                  quote: [{
-                    open: [182.45],
-                    high: [184.89],
-                    low: null,
-                    close: [184.35],
-                    volume: [48215632]
-                  }]
-                }
-              }]
+      serverProcess.stdout?.setEncoding('utf8');
+      serverProcess.stdout?.on('data', (chunk: string) => {
+        stdoutBuffer += chunk;
+        let newline = stdoutBuffer.indexOf('\n');
+        while (newline >= 0) {
+          const line = stdoutBuffer.slice(0, newline).trim();
+          stdoutBuffer = stdoutBuffer.slice(newline + 1);
+          if (line !== '') {
+            const response = JSON.parse(line) as Record<string, unknown>;
+            const id = response.id as number | undefined;
+            if (id !== undefined) {
+              pending.get(id)?.(response);
+              pending.delete(id);
             }
-          })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_historical_prices',
-        arguments: {
-          symbol: 'AAPL'
+          }
+          newline = stdoutBuffer.indexOf('\n');
         }
       });
 
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
+      await sendMCPRequest(createMCPRequest('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        clientInfo: { name: 'chaos-partial-data', version: '1.0.0' }
+      }, 0));
+      serverProcess.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
     });
 
-    test('should handle partial news data', async () => {
-      global.fetch = jest.fn(() => {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            count: 5,
-            itemsResult: {
-              items: [
-                {
-                  title: 'News 1',
-                  link: 'https://example.com/1'
-                },
-                {
-                  title: 'News 2',
-                  link: null
-                },
-                {
-                  title: null,
-                  link: 'https://example.com/3'
-                }
-              ]
-            }
-          })
-        });
-      });
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_news',
-        arguments: {
-          symbol: 'AAPL'
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
+    afterAll(async () => {
+      if (serverProcess === null) return;
+      const exited = new Promise<void>(resolve => { serverProcess?.once('exit', () => resolve()); });
+      serverProcess.stdin?.end();
+      serverProcess.kill('SIGTERM');
+      const killTimer = setTimeout(() => { serverProcess?.kill('SIGKILL'); }, 3000);
+      await exited;
+      clearTimeout(killTimer);
+      serverProcess = null;
     });
 
-    test('should handle partial financials data', async () => {
-      global.fetch = jest.fn(() => {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            incomeStatementHistory: {
-              incomeStatementHistory: [
-                {
-                  totalRevenue: 383285996544,
-                  costOfRevenue: null,
-                  grossProfit: null,
-                  netIncome: 96994997248
-                }
-              ]
-            }
-          })
-        });
-      });
+    test('resources/templates/list reports all 6 templates', async () => {
+      const response = await sendMCPRequest(createMCPRequest('resources/templates/list', {}, 1));
+      const templates = (response.result as { resourceTemplates: Array<{ uriTemplate: string }> }).resourceTemplates;
 
-      const request = createMCPRequest('tools/call', {
-        name: 'get_income_statement',
-        arguments: {
-          symbol: 'AAPL'
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Partial data with caching', () => {
-    test('should use cached data when current is partial', async () => {
-      let callCount = 0;
-      global.fetch = jest.fn(() => {
-        callCount++;
-        if (callCount === 1) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: 185.92,
-                    regularMarketVolume: 44981879,
-                    marketCap: 2898258160640,
-                    trailingPE: 29.84
-                  }
-                }]
-              }
-            })
-          });
-        } else {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: null
-                  }
-                }]
-              }
-            })
-          });
-        }
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request1);
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
-    });
-
-    test('should prefer partial current data over stale cache', async () => {
-      let callCount = 0;
-      global.fetch = jest.fn(() => {
-        callCount++;
-        if (callCount === 1) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: 185.92,
-                    regularMarketVolume: 44981879
-                  }
-                }]
-              }
-            })
-          });
-        } else {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: 186.50
-                  }
-                }]
-              }
-            })
-          });
-        }
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request1);
-
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
-    });
-  });
-
-  describe('Partial data quality reporting', () => {
-    test('should provide quality report for partial data', async () => {
-      mockSparseData(5);
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should rate data quality appropriately', async () => {
-      mockPartialData('missingPrice');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-
-    test('should provide recommendations based on data quality', async () => {
-      mockPartialData('missingMarketCap');
-
-      const request = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      const response = await sendMCPRequest(request);
-
-      expect(response).toHaveProperty('result');
-    });
-  });
-
-  describe('Concurrent partial data handling', () => {
-    test('should handle multiple requests with partial data', async () => {
-      mockSparseData(5);
-
-      const requests = Array(5).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const responses = await Promise.all(
-        requests.map(req => sendMCPRequest(req))
-      );
-
-      responses.forEach(response => {
-        expect(response).toHaveProperty('result');
-      });
-    });
-
-    test('should not deadlock on partial data', async () => {
-      mockPartialData('missingVolume');
-
-      const requests = Array(10).fill(null).map((_, i) =>
-        createMCPRequest('tools/call', {
-          name: 'get_quote',
-          arguments: { symbols: ['AAPL'] }
-        }, i + 1)
-      );
-
-      const startTime = Date.now();
-      await Promise.all(
-        requests.map(req => sendMCPRequest(req))
-      );
-      const duration = Date.now() - startTime;
-
-      expect(duration).toBeLessThan(30000);
-    });
-  });
-
-  describe('Recovery from partial data', () => {
-    test('should recover from partial to complete data', async () => {
-      let callCount = 0;
-      global.fetch = jest.fn(() => {
-        callCount++;
-        if (callCount === 1) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: 185.92
-                  }
-                }]
-              }
-            })
-          });
-        } else {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              quoteResponse: {
-                result: [{
-                  price: {
-                    regularMarketPrice: 185.92,
-                    regularMarketVolume: 44981879,
-                    marketCap: 2898258160640,
-                    trailingPE: 29.84
-                  }
-                }]
-              }
-            })
-          });
-        }
-      });
-
-      const request1 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL']
-        }
-      });
-
-      await sendMCPRequest(request1);
-
-      const request2 = createMCPRequest('tools/call', {
-        name: 'get_quote',
-        arguments: {
-          symbols: ['AAPL'],
-          forceRefresh: true
-        }
-      });
-
-      const response2 = await sendMCPRequest(request2);
-
-      expect(response2).toHaveProperty('result');
+      expect(templates).toHaveLength(6);
+      expect(templates.map(t => t.uriTemplate)).toContain('ticker://{symbol}/quote');
     });
   });
 });

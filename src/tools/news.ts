@@ -1,8 +1,8 @@
 import { yahooFinance } from '../services/yahoo-finance.js';
 import { NewsInputSchema, NewsOutputSchema } from '../schemas/index.js';
-import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
-import { DataQualityReporter } from '../utils/data-completion.js';
+import { YahooFinanceError, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
 import type { NewsItem, NewsResult, RawSearchNews } from '../types/yahoo-finance.js';
+import type { ToolDefinition } from '../types/mcp.js';
 import { InputValidator } from '../utils/security.js';
 
 const NEWS_CACHE_TTL = 300000;
@@ -59,7 +59,10 @@ function convertNewsItem(item: Record<string, unknown>): {
 } {
   const link = typeof item.link === 'string' ? item.link : '';
   const providerPublishTime = typeof item.providerPublishTime === 'number' ? item.providerPublishTime : 0;
-  const relatedTickers = Array.isArray(item.relatedTickers) ? item.relatedTickers : [];
+  const rawRelatedTickers = item.relatedTickers;
+  const relatedTickers: string[] = Array.isArray(rawRelatedTickers)
+    ? rawRelatedTickers.filter((ticker: unknown): ticker is string => typeof ticker === 'string')
+    : [];
 
   return {
     uuid: typeof item.uuid === 'string' ? item.uuid : '',
@@ -264,7 +267,7 @@ export async function getCompanyNewsTool(
 
   InputValidator.validateSymbol(symbol);
 
-  if (startDate) {
+  if (startDate !== undefined && startDate.length > 0) {
     InputValidator.validateDate(startDate, 'startDate');
   }
 
@@ -278,7 +281,7 @@ export async function getCompanyNewsTool(
 
   let filteredNews = data.news;
 
-  if (startDate) {
+  if (startDate !== undefined && startDate !== '') {
     const start = new Date(startDate).getTime();
     filteredNews = data.news.filter((item) => {
       if (item.providerPublishTime === 0) {return false;}
@@ -305,7 +308,7 @@ export async function getCompanyNewsTool(
   return NewsOutputSchema.parse(output);
 }
 
-export function getNewsToolDefinitions() {
+export function getNewsToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'get_news',

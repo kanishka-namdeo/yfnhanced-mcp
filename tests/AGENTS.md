@@ -2,43 +2,47 @@
 
 ## Purpose
 
-51 test modules across four layers plus shared fixtures, run by Jest against the TypeScript source and the built server.
+52 test modules across four layers plus shared fixtures, run by Jest against the TypeScript source and against the built server.
 
 ## Ownership
 
-- This folder owns test layering, mocking policy, and the coverage gate. `src/` owns the behavior being asserted; a test never defines a contract that `src/` does not already implement.
+- This folder owns test layering, the mocking policy, the deterministic-versus-live split, and the coverage gate. `src/` owns the behavior being asserted; a test never defines a contract that `src/` does not already implement.
 - `tests/unit/`, `tests/integration/`, and `tests/fixtures/` are governed here. `tests/e2e/` and `tests/chaos/` have their own contracts because they run the built artifact in a separate process.
+- The live boundary is owned here, in `jest.config.js` and `jest.live.config.js`, not in `package.json`.
 
 ## Local Contracts
 
-- Layers and counts: 31 under `tests/unit/`, 9 under `tests/integration/` (subdirs `tools/`, `middleware/`, `server/`, `e2e/`), 5 under `tests/e2e/`, 6 under `tests/chaos/`, and `tests/fixtures/` holding `mock-responses.ts` and `test-data.ts`.
-- One command runs everything: `npm test` is plain `jest` (`package.json:19`). There are no `test:unit`, `test:integration`, `test:e2e`, or `test:chaos` scripts, and `jest.config.js:21-25` has no per-layer `testMatch`, so `*.chaos.test.ts` and `*.e2e.test.ts` execute inside `npm test`.
-- Narrow runs use the CLI directly: `npx jest tests/unit/tools/quotes.test.ts`, `npx jest tests/chaos`, `npx jest -t "<test name>"`.
-- Coverage gate is global 85% for branches, functions, lines, and statements (`jest.config.js:40-46`), enforced by `npm run test:coverage`. `collectCoverageFrom` (`:26-32`) excludes `src/**/index.ts`, so the server entrypoint is outside the gate, and it only ever scans `src/`.
-- Module system: `extensionsToTreatAsEsm: ['.ts']` (`:4`) against `"type": "module"` (`package.json:5`), while the transform forces `module: 'commonjs'` (`:15`). `moduleNameMapper` (`:5-7`) rewrites `.js` specifiers to extensionless paths, which is why both `.js` and extensionless imports resolve here. `babel.config.js` is dead: it is CommonJS in an ESM package and its Babel presets are not installed; it is also in eslint's `ignores` (`eslint.config.mjs:10`).
-- `testTimeout` is 30000 ms and `verbose` is on (`:48-49`). There are no `setupFiles`, `globalSetup`, or teardown modules, so nothing sets or guards an environment for the suite.
-- Mocking policy by layer: unit tests `jest.mock` the `src` module under test and use inline literals; integration tests mock the service and data-quality modules (`tests/integration/tools/quotes.integration.test.ts:7-8`) or `yahoo-finance2` itself (`tests/integration/e2e/full-workflow.integration.test.ts:1`), while middleware integration uses the real classes. There is no live-network guard anywhere: no `describe.skip`, `it.skip`, or env check exists in `tests/`.
-- Fixtures are the shared vocabulary: `test-data.ts` supplies `validSymbols`, `cryptoSymbols`, `forexPairs`, `networkFailureScenarios` (`:117-123`), `rateLimitConfigs`, `timeoutValues`, `backoffStrategies`, and intermittent-failure generators (`:135-147`); `mock-responses.ts` supplies one `mock*Response` per tool.
-- Style: explicit imports from `@jest/globals` at the top of every file, nested `describe` per feature area, built-in `expect` matchers only (no chai/sinon), and `test`/`it` leaves. JSON-RPC helpers `createMCPRequest`/`sendMCPRequest` are duplicated per spawned-server file rather than shared.
-- Known-broken imports (not run in this session; the named exports do not exist in `src/`): `QuoteTools` is exported but tests import `QuotesTools` (`tests/unit/tools/quotes.test.ts:1`); `tests/unit/tools/financials|holders|news|options.test.ts` import classes where those files export functions; `tests/unit/config/defaults.test.ts:1` imports `getDefaultConfig` and twelve `get*Defaults`; `tests/unit/config/validation.test.ts:1` imports `validateConfig` and nine more while the module exports zod schemas; `tests/unit/utils/*` import `formatLargeNumber`, `formatTime`, `formatPrice`, `calculateCompleteness`, `calculateFieldQuality`; `tests/integration/server/server.integration.test.ts:4` imports `config`; `tests/unit/services/data-aggregator.test.ts` imports `FallbackStrategy`. `tests/unit/types/errors.test.ts` is covered in `src/types/AGENTS.md`.
-- `tests/unit/resources/templates.test.ts` asserts `expect(true).toBe(true)` for a folder that does not exist in `src/`. It passes and covers nothing; do not read it as resource coverage.
-- Measured baseline, 2026-10-13, on the v2.0.0 dependency set (Jest 30.5.2, ts-jest 29.4.14, TypeScript 6.0.3): `npm test` fails 44 of 51 suites and 597 of 1131 tests, while `npm run typecheck` and `npm run build` are clean. Most suite failures are the stale imports listed above plus timing-sensitive rate-limiter assertions; the layer does not detect the Yahoo data shapes because it mocks namespace functions that `src/` never calls. Re-measure before claiming you made anything worse, and treat `npm run build && node test-mcp-client.js` as the real functional check.
+- Layers and counts: 36 under `tests/unit/`, 9 under `tests/integration/` (subdirs `tools/`, `middleware/`, `server/`, `e2e/`), 5 under `tests/e2e/`, 6 under `tests/chaos/`, and `tests/fixtures/` holding `mock-responses.ts` and `test-data.ts`.
+- Commands: `npm test` is `jest` with `testNamePattern: '^(?!.*live market data)'`, so it is deterministic and needs no network. `npm run test:live` runs `jest.live.config.js`, which keeps only the `live market data` groups inside `server.e2e.test.ts`, `tool-execution.e2e.test.ts`, and `resource-access.e2e.test.ts` — those three files are named in its `testMatch` because a suite whose every test is filtered out fails with "Your test suite must contain at least one test". `test:live` needs both `npm run build` and internet access. Neither workflow runs it.
+- The phrase `live market data` inside a `describe` title IS the split. Renaming or dropping it silently moves a network-dependent test into the CI gate, where a Yahoo outage or a 429 reads as a broken build. 55 tests are filtered by name in the default run and Jest reports them as skipped.
+- Module system: `extensionsToTreatAsEsm: ['.ts']` (`jest.config.js:4`) against `"type": "module"` (`package.json:5`), while the transform forces `module: 'commonjs'` (`:15`) and nothing runs Jest with `--experimental-vm-modules`. Consequence: `import.meta` cannot appear in any file the suite loads — not a test, and not any `src/` module a test imports, because TypeScript refuses to downlevel it. That is why `src/index.ts` is the only file holding an ESM anchor and `src/server.ts` holds the loadable class. Test paths use `__dirname` / `path.resolve(__dirname, '../../dist/index.js')`, which `@types/node` supplies under the CJS transform.
+- `moduleNameMapper` (`:5-7`) rewrites `.js` specifiers to extensionless paths, so both `.js` and extensionless imports resolve here. `babel.config.js` is dead: CommonJS in an ESM package, presets not installed, and it is in eslint's `ignores`.
+- `testTimeout` is 30000 ms and `verbose` is on. There are no `setupFiles`, `globalSetup`, or teardown modules, so nothing sets or guards an environment; a live group sets its own per-test timeout instead of raising the global one.
+- Mocking policy: a test fakes the seam the code actually calls — the shared `yahooFinance` singleton's methods (`quote`, `chart`, `quoteSummary`, `search`, `options`, `fundamentalsTimeSeries`, `trendingSymbols`, `screener`) or an injected `YahooFinanceClient` — and restores it afterwards. `jest.mock`-ing a namespace function that `src/` never invokes is the failure mode that kept 44 suites red; it cannot see the real data shapes and passes for the wrong reason.
+- Handlers return plain objects and `src/server.ts` wraps them into `content: [{ type: 'text', text: JSON.stringify(...) }]`. Unit and integration tests assert the plain object; e2e tests assert the wrapped JSON string. Never mix the two.
+- Spawned-server suites: one child per file, spawned in `beforeAll` and killed in `afterAll` (`stdin.end()` → `SIGTERM` → `SIGKILL`), never one per test. Readiness is the `Yahoo Finance MCP Server started successfully` line on **stderr** — diagnostics never go to stdout. Replies are correlated by JSON-RPC `id` through a single shared stdout reader, and every spawned file asserts continuous stdout framing, which is the only thing in this layer that catches a stray `console.log` in `src/`.
+- Coverage is enforced globally at 85% for branches, functions, lines, and statements (`jest.config.js:40-46`) by `npm run test:coverage`. `collectCoverageFrom` excludes `src/**/*.d.ts`, `*.test.ts`, `*.spec.ts`, and `src/**/index.ts` — so since the 2026-10-13 entry split the `MCPServer` class in `src/server.ts` counts and the thin entry does not.
+- Measured 2026-10-14: `npm test` is 56 of 56 suites and 2112 tests passing with 55 live tests skipped, and `npm run test:coverage` PASSES the 85% gate at 98.05% statements / 95.15% branches / 98.98% functions. `npm run test:live` passes all 55 network cases against Yahoo in about 15 s. The whole repo gate — lint, typecheck, build, test, coverage — is green; keep it that way by closing branch gaps rather than lowering the threshold.
+- `TEST_REPORT.md` and `COMPREHENSIVE_TEST_REPORT.md` at the repository root are frozen 2026-01-18 snapshots. They are not a verification source and their counts match nothing; do not cite them.
 
 ## Work Guidance
 
-- Test files are not type-checked (`tsconfig.json:39-47` excludes `tests` and `*.test.ts`) and are not linted: `eslint.config.mjs:15` scopes the rule block to `src/**/*.ts`, and the override at `:87-95` only switches rules off. Only Jest's own transform catches errors here.
-- Follow the existing path style when touching a file already importing fixtures with a `.ts` suffix (`tests/chaos/*.test.ts:6`, `tests/e2e/tool-execution.e2e.test.ts:6-7`); `allowImportingTsExtensions` is `false` (`tsconfig.json:33`), so those files stay outside any type check by necessity.
-- Prefer `npx jest <path>` for a fast loop; a full `npm test` starts six spawned-server suites.
-- Keep assertions off stdout framing; spawned servers speak JSON-RPC on stdout and are parsed, not printed.
+- Test files are neither type-checked (`tsconfig.json` excludes `tests`) nor linted (`eslint.config.mjs` scopes the strict block to `src/**/*.ts`). Jest's own transform is the only net, which is exactly how a file importing twelve functions that never existed stayed red for months.
+- Prefer `npx jest <path>` for a loop; a full `npm test` starts the spawned-server files. Never assert against stdout framing except in the spawned layer.
+- Do not lower the 85% threshold to match a measurement, and do not add assertion-free tests to inflate it. Close the branch gap or state it.
+- When `src/` behavior changes, update the tests that pinned the old defect instead of leaving a green lie — the two `get_balance_sheet` symbol-validation pins are the worked example from 2026-10-13.
+- Keep the per-file `createMCPRequest`/`sendMCPRequest` pair inside each spawned-server file until someone moves it into `tests/fixtures/`; six copies currently differ only in timeout handling.
+- Follow the existing `.ts`-suffix fixture imports in files that already use them (`tests/chaos/*.test.ts:6`, `tests/e2e/tool-execution.e2e.test.ts:6-7`); `allowImportingTsExtensions` is `false`, so those files stay outside any type check by necessity.
 
 ## Verification
 
-- `npm test`
-- `npm run test:coverage` (fails below the global 85% thresholds)
+- `npm test` — deterministic, no network, but requires `npm run build` first for the spawned-server files.
+- `npm run test:live` — the 55 network cases; needs build plus internet.
+- `npm run test:coverage` — the same run with the 85% gate.
 - `npm run test:watch`
-- Precondition for `tests/e2e` and `tests/chaos`: `npm run build`
+- Single file or single case: `npx jest tests/unit/tools/quotes.test.ts`, `npx jest -t "<test name>"`.
 
 ## Child DOX Index
 
-- `tests/e2e/AGENTS.md` — spawned-server protocol tests and their real-API outlier.
-- `tests/chaos/AGENTS.md` — failure injection and the process boundary that limits it.
+- `tests/e2e/AGENTS.md` — spawned-server protocol tests, their stdout-framing contract, and their live groups.
+- `tests/chaos/AGENTS.md` — in-process failure injection and the process-boundary limit that made the old spawned-fault fiction impossible to honor.

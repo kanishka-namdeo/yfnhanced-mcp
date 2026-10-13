@@ -12,7 +12,7 @@ Type-only declarations: config shapes, middleware interfaces, MCP wire shapes, Y
 ## Local Contracts
 
 - Fourteen error codes are exported as string constants (`errors.ts:1-14`): `YF_ERR_RATE_LIMIT`, `YF_ERR_API_CHANGED`, `YF_ERR_DATA_UNAVAILABLE`, `YF_ERR_SYMBOL_NOT_FOUND`, `YF_ERR_NETWORK`, `YF_ERR_TIMEOUT`, `YF_ERR_SERVER`, `YF_ERR_DATA_INCOMPLETE`, `YF_ERR_CIRCUIT_OPEN`, `YF_ERR_CACHE_STALE`, `YF_ERR_UNKNOWN`, `YF_ERR_MAX_RETRIES_EXCEEDED`, `YF_ERR_COOKIE_ERROR`, `YF_ERR_PARTIAL_DATA`. `ErrorCodeType` (`:16-30`) is the union of those literals, so a new code must be added to both the const and the union.
-- `YahooFinanceError` (`:46-106`) takes nine positional arguments: `message`, `code`, `statusCode`, `isRetryable`, `isRateLimit`, `context = {}`, `suggestedAction`, `warnings?`, `partialData?`. `suggestedAction` is required but follows a defaulted parameter, so callers must pass the first seven positions explicitly. The constructor sets `name`, `timestamp`, and calls `Object.setPrototypeOf` (`:79`); keep that call when subclassing, or `instanceof` breaks under the transpiled target.
+- `YahooFinanceError` (`:46-106`) takes nine positional arguments: `message`, `code`, `statusCode`, `isRetryable`, `isRateLimit`, `context = {}`, `suggestedAction`, `warnings?`, `partialData?`. `suggestedAction` is required but follows a defaulted parameter, so callers must pass the first seven positions explicitly. The base constructor calls `Object.setPrototypeOf(this, YahooFinanceError.prototype)` (`:79`), which throws away the derived prototype, so EVERY subclass must re-assert its own — `CircuitBreakerOpenError` and `MaxRetriesExceededError` did; `RateLimitError` did not, which made `error instanceof RateLimitError` false for its own class until 2026-10-13.
 - `toJSON()` (`:82-96`) is what a client may see after `sanitizeError`: it exposes `code`, `statusCode`, `isRetryable`, `isRateLimit`, `context`, ISO `timestamp`, `suggestedAction`, `warnings`, and a boolean `hasPartialData` rather than the data itself.
 - `PartialDataResult<T>` (`:39-44`) always sets `isPartial` and `hasData` from `partialData !== undefined` (`:98-105`); a present-but-empty payload reports partial success.
 - `DataWarning` (`:32-37`) has `severity: 'warning' | 'info'` only — there is no error severity, so a blocking condition cannot be expressed as a warning.
@@ -30,7 +30,7 @@ Type-only declarations: config shapes, middleware interfaces, MCP wire shapes, Y
 ## Verification
 
 - `npm run typecheck` covers these files (they are inside `src/**/*`)
-- `npx jest tests/unit/types/errors` (currently imports `ConfigError`, `NetworkError`, `CircuitBreakerError`, `ValidationError`, `NotFoundError`, none of which this folder exports)
+- `npx jest tests/unit/types/errors` — rewritten on 2026-10-13 against the one real class; the older version imported `ConfigError`, `NetworkError`, `CircuitBreakerError`, `ValidationError`, `NotFoundError` and `RateLimitError`, none of which this folder exports.
 
 ## Child DOX Index
 

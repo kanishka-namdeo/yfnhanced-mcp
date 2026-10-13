@@ -1,8 +1,7 @@
-import { YahooFinanceError, YF_ERR_COOKIE_ERROR, YF_ERR_PARTIAL_DATA } from '../types/errors.js';
+import { YahooFinanceError, YF_ERR_COOKIE_ERROR } from '../types/errors.js';
 import { classifyError } from '../utils/error-classifier.js';
-import type { RetryConfig, RetryAttempt, RetryResult } from '../types/middleware.js';
+import type { RetryConfig, RetryAttempt } from '../types/middleware.js';
 
-const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 const RETRYABLE_ERROR_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED'];
 const RETRYABLE_ERROR_MESSAGES = ['timeout', 'network', 'rate limit', 'cookie', 'session'];
 
@@ -44,20 +43,10 @@ export class RetryPolicy {
 
   async execute<T>(fn: () => Promise<T>, context?: Record<string, unknown>): Promise<T> {
     this.reset();
-    const startTime = Date.now();
 
     try {
       return await this.executeWithRetry(fn, context);
     } catch (error) {
-      const totalDurationMs = Date.now() - startTime;
-      const result: RetryResult<T> = {
-        success: false,
-        error: error instanceof Error ? error : new Error(String(error)),
-        attempts: this.attempt,
-        totalDurationMs,
-        attemptsHistory: this.retryHistory
-      };
-
       if (this.attempt > this.config.maxRetries) {
         throw new MaxRetriesExceededError(
           `Max retries (${this.config.maxRetries}) exceeded after ${this.attempt} attempts`,
@@ -123,7 +112,7 @@ export class RetryPolicy {
       this.config.onGiveUp(lastError, this.attempt);
     }
 
-    throw lastError || new Error('Retry failed without error');
+    throw lastError ?? new Error('Retry failed without error');
   }
 
   shouldRetry(error: unknown, attempt: number): boolean {
@@ -133,7 +122,7 @@ export class RetryPolicy {
 
     const classifiedError = error instanceof YahooFinanceError ? error : classifyError(error);
 
-    if (this.config.skipRetry?.(classifiedError)) {
+    if (this.config.skipRetry?.(classifiedError) === true) {
       return false;
     }
 
@@ -141,13 +130,15 @@ export class RetryPolicy {
       return false;
     }
 
-    if (classifiedError.statusCode && this.config.retryableStatusCodes.includes(classifiedError.statusCode)) {
+    if (classifiedError.statusCode !== null && this.config.retryableStatusCodes.includes(classifiedError.statusCode)) {
       return true;
     }
 
-    const errorCode = (error as any)?.code;
-    if (errorCode && RETRYABLE_ERROR_CODES.includes(errorCode)) {
-      return true;
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      const errorCode: unknown = error.code;
+      if (typeof errorCode === 'string' && RETRYABLE_ERROR_CODES.includes(errorCode)) {
+        return true;
+      }
     }
 
     const errorMessage = classifiedError.message.toLowerCase();
@@ -171,7 +162,10 @@ export class RetryPolicy {
         delay = this.config.initialDelayMs * attempt;
         break;
       case 'fixed':
-        delay = this.config.retryDelayMs || this.config.initialDelayMs;
+        // A 0 or NaN retryDelayMs falls back to initialDelayMs, as the `||` did.
+        delay = this.config.retryDelayMs !== undefined && this.config.retryDelayMs !== 0 && !Number.isNaN(this.config.retryDelayMs)
+          ? this.config.retryDelayMs
+          : this.config.initialDelayMs;
         break;
       default:
         delay = this.config.initialDelayMs;
@@ -224,7 +218,7 @@ export class RetryPolicy {
     }
 
     // Transient server errors (502, 503, 504): moderate backoff
-    if (error.statusCode && [502, 503, 504].includes(error.statusCode)) {
+    if (error.statusCode !== null && [502, 503, 504].includes(error.statusCode)) {
       return Math.min(baseDelay * 1.5, this.config.maxDelayMs);
     }
 
@@ -255,7 +249,7 @@ export function createRetryPolicy(config: RetryConfig, delayFn?: (ms: number) =>
   return new RetryPolicy(config, delayFn);
 }
 
-export async function retry<T>(
+export function retry<T>(
   fn: () => Promise<T>,
   config: RetryConfig,
   context?: Record<string, unknown>,

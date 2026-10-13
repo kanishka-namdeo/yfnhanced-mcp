@@ -44,8 +44,6 @@ import { Cache } from '../middleware/cache.js';
 import { RetryPolicy } from '../middleware/retry.js';
 import { classifyError } from '../utils/error-classifier.js';
 
-/* eslint-disable require-await */
-
 type YahooFinanceOptions = {
   validate?: boolean;
   useCache?: boolean;
@@ -254,9 +252,9 @@ export class YahooFinanceClient {
 
     // Try to fetch live data
     try {
-      liveData = await this.circuitBreaker.execute(async () => {
-        return this.rateLimiter.execute(async () => {
-          return this.retryPolicy.execute(async () => {
+      liveData = await this.circuitBreaker.execute(() => {
+        return this.rateLimiter.execute(() => {
+          return this.retryPolicy.execute(() => {
             return fn();
           }, { cacheKey });
         }, cacheKey);
@@ -868,8 +866,8 @@ export class YahooFinanceClient {
       }
     }
 
-    return this.circuitBreaker.execute(async () => {
-      return this.rateLimiter.execute(async () => {
+    return this.circuitBreaker.execute(() => {
+      return this.rateLimiter.execute(() => {
         return this.retryPolicy.execute(async () => {
           try {
             const result = await fn();
@@ -1366,7 +1364,7 @@ export class YahooFinanceClient {
 
           // Check for cookie-related issues in response
           const setCookieHeader = response.headers.get('set-cookie');
-          if (setCookieHeader && setCookieHeader.includes('crumb')) {
+          if (setCookieHeader?.includes('crumb') === true) {
             this.addWarning(
               'cookie',
               'info',
@@ -1404,7 +1402,10 @@ export class YahooFinanceClient {
    * Handles cookie/session errors with specific recovery strategies
    */
   private handleCookieError(error: YahooFinanceError, cacheKey: string): void {
-    const hints = error.context?.hints as string[] || [];
+    const contextHints: unknown = error.context?.hints;
+    const hints = Array.isArray(contextHints)
+      ? contextHints.filter((hint): hint is string => typeof hint === 'string')
+      : [];
 
     // Add specific warnings for cookie issues
     if (hints.some(h => h.includes('crumb'))) {

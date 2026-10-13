@@ -1,14 +1,27 @@
 import { yahooFinance } from '../services/yahoo-finance.js';
 import { FinancialsInputSchema, FinancialsOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE } from '../types/errors.js';
-import { DataQualityReporter } from '../utils/data-completion.js';
-import type { FinancialStatementResult, BalanceSheet, IncomeStatement, CashFlowStatement } from '../types/yahoo-finance.js';
-import type { CacheConfig } from '../types/config.js';
+import type { ToolDefinition } from '../types/mcp.js';
+import type {
+  FundamentalsTimeSeriesBalanceSheetResult,
+  FundamentalsTimeSeriesCashFlowResult,
+  FundamentalsTimeSeriesFinancialsResult
+} from 'yahoo-finance2/modules/fundamentalsTimeSeries';
 import { InputValidator } from '../utils/security.js';
 
-type FinancialsToolConfig = {
-  cache: CacheConfig;
-  defaultTTL: number;
+type WrappedMetric = { fmt: string; raw: number };
+
+// Rows built from fundamentalsTimeSeries; every metric is present-or-undefined, unlike
+// the repo's BalanceSheet/IncomeStatement/CashFlowStatement types which mark them required.
+type StatementPeriodRow = {
+  endDate: WrappedMetric;
+  [metric: string]: WrappedMetric | undefined;
+};
+
+type StatementPeriodData = {
+  maxAge: number;
+  annual: StatementPeriodRow[];
+  quarterly: StatementPeriodRow[];
 };
 
 type StatementData = {
@@ -115,7 +128,7 @@ function extractField(item: Record<string, unknown>, fieldName: string): number 
     return field;
   }
   if (typeof field === 'object' && field !== null && 'raw' in field) {
-    const raw = (field as { raw: unknown }).raw;
+    const raw = field.raw;
     return typeof raw === 'number' ? raw : null;
   }
   return null;
@@ -130,12 +143,20 @@ function extractStringField(item: Record<string, unknown>, fieldName: string): s
     return field;
   }
   if (typeof field === 'object' && field !== null && 'fmt' in field) {
-    return String((field as { fmt: unknown }).fmt);
+    return String(field.fmt);
   }
   return null;
 }
 
-function buildFieldAvailability(data: Record<string, number | null>, expectedFields: string[]): Record<string, boolean> {
+// Mirrors the previous truthiness check on raw Yahoo numbers: 0 stays absent.
+function wrapMetric(value: number | undefined): WrappedMetric | undefined {
+  if (value === undefined || value === 0) {
+    return undefined;
+  }
+  return { fmt: String(value), raw: value };
+}
+
+function buildFieldAvailability(data: Record<string, number | string | null>, expectedFields: string[]): Record<string, boolean> {
   const availability: Record<string, boolean> = {};
   for (const field of expectedFields) {
     availability[field] = data[field] !== null && data[field] !== undefined;
@@ -145,7 +166,7 @@ function buildFieldAvailability(data: Record<string, number | null>, expectedFie
 
 function convertBalanceSheetToStatementData(item: Record<string, unknown>): StatementData {
   const endDateRaw = extractStringField(item, 'endDate');
-  const endDate = endDateRaw ? new Date(endDateRaw).toISOString().split('T')[0] : '';
+  const endDate = endDateRaw !== null && endDateRaw !== '' ? new Date(endDateRaw).toISOString().split('T')[0] : '';
 
   const statement: StatementData = {
     period: 'annual',
@@ -174,7 +195,7 @@ function convertBalanceSheetToStatementData(item: Record<string, unknown>): Stat
 
 function convertIncomeStatementToStatementData(item: Record<string, unknown>): StatementData {
   const endDateRaw = extractStringField(item, 'endDate');
-  const endDate = endDateRaw ? new Date(endDateRaw).toISOString().split('T')[0] : '';
+  const endDate = endDateRaw !== null && endDateRaw !== '' ? new Date(endDateRaw).toISOString().split('T')[0] : '';
 
   const statement: StatementData = {
     period: 'annual',
@@ -204,7 +225,7 @@ function convertIncomeStatementToStatementData(item: Record<string, unknown>): S
 
 function convertCashFlowToStatementData(item: Record<string, unknown>): StatementData {
   const endDateRaw = extractStringField(item, 'endDate');
-  const endDate = endDateRaw ? new Date(endDateRaw).toISOString().split('T')[0] : '';
+  const endDate = endDateRaw !== null && endDateRaw !== '' ? new Date(endDateRaw).toISOString().split('T')[0] : '';
 
   const statement: StatementData = {
     period: 'annual',
@@ -234,7 +255,6 @@ function buildStatementMetadata(
   dataAge: number,
   expectedFields: string[]
 ): StatementWithMeta['meta'] {
-  const qualityReporter = new DataQualityReporter(CACHE_TTL);
   const warnings: string[] = [];
 
   let totalFields = 0;
@@ -262,7 +282,7 @@ function buildStatementMetadata(
   }
 
   const latestDate = statements.length > 0 ? statements[0].endDate : '';
-  const recency = latestDate || new Date().toISOString().split('T')[0];
+  const recency = latestDate !== '' ? latestDate : new Date().toISOString().split('T')[0];
 
   return {
     fromCache,
@@ -276,7 +296,7 @@ function buildStatementMetadata(
 async function fetchBalanceSheet(
   symbol: string,
   frequency: 'annual' | 'quarterly' = 'annual'
-): Promise<BalanceSheet> {
+): Promise<StatementPeriodData> {
   try {
     // Use a date far in the past to get all available historical data
     const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
@@ -285,7 +305,7 @@ async function fetchBalanceSheet(
       period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result || result.length === 0) {
+    if (result.length === 0) {
       throw new YahooFinanceError(
         `Balance sheet data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -297,8 +317,7 @@ async function fetchBalanceSheet(
       );
     }
 
-    // Convert fundamentalsTimeSeries format to legacy BalanceSheet format
-    const bsData: BalanceSheet = {
+    const bsData: StatementPeriodData = {
       maxAge: 0,
       annual: [],
       quarterly: []
@@ -306,32 +325,35 @@ async function fetchBalanceSheet(
 
     const dataArray = frequency === 'annual' ? bsData.annual : bsData.quarterly;
 
-    // Cast result to BalanceSheet type
-    for (const item of result as any) {
-      const periodData: Record<string, unknown> = {
+    const rows = result.filter(
+      (item): item is FundamentalsTimeSeriesBalanceSheetResult => item.TYPE === 'BALANCE_SHEET'
+    );
+
+    for (const item of rows) {
+      const periodData: StatementPeriodRow = {
         endDate: {
           fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
           raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
         },
-        totalAssets: item.totalAssets ? { fmt: item.totalAssets.toString(), raw: item.totalAssets } : undefined,
-        totalLiab: item.totalLiabilitiesNetMinorityInterest ? { fmt: item.totalLiabilitiesNetMinorityInterest.toString(), raw: item.totalLiabilitiesNetMinorityInterest } : undefined,
-        totalStockholderEquity: item.stockholdersEquity ? { fmt: item.stockholdersEquity.toString(), raw: item.stockholdersEquity } : undefined,
-        cash: item.cashAndCashEquivalents ? { fmt: item.cashAndCashEquivalents.toString(), raw: item.cashAndCashEquivalents } : undefined,
-        shortTermInvestments: item.cashCashEquivalentsAndShortTermInvestments ? { fmt: item.cashCashEquivalentsAndShortTermInvestments.toString(), raw: item.cashCashEquivalentsAndShortTermInvestments } : undefined,
-        netReceivables: item.receivables ? { fmt: item.receivables.toString(), raw: item.receivables } : undefined,
-        inventory: item.inventory ? { fmt: item.inventory.toString(), raw: item.inventory } : undefined,
-        totalCurrentAssets: item.currentAssets ? { fmt: item.currentAssets.toString(), raw: item.currentAssets } : undefined,
-        totalCurrentLiabilities: item.currentLiabilities ? { fmt: item.currentLiabilities.toString(), raw: item.currentLiabilities } : undefined,
-        longTermDebt: item.longTermDebt ? { fmt: item.longTermDebt.toString(), raw: item.longTermDebt } : undefined,
-        propertyPlantEquipment: item.netPPE ? { fmt: item.netPPE.toString(), raw: item.netPPE } : undefined,
-        goodWill: item.goodwill ? { fmt: item.goodwill.toString(), raw: item.goodwill } : undefined,
-        intangibleAssets: item.otherIntangibleAssets ? { fmt: item.otherIntangibleAssets.toString(), raw: item.otherIntangibleAssets } : undefined,
-        retainedEarnings: item.retainedEarnings ? { fmt: item.retainedEarnings.toString(), raw: item.retainedEarnings } : undefined,
-        otherAssets: item.otherAssets ? { fmt: item.otherAssets.toString(), raw: item.otherAssets } : undefined,
-        otherLiab: item.otherLiabilities ? { fmt: item.otherLiabilities.toString(), raw: item.otherLiabilities } : undefined
+        totalAssets: wrapMetric(item.totalAssets),
+        totalLiab: wrapMetric(item.totalLiabilitiesNetMinorityInterest),
+        totalStockholderEquity: wrapMetric(item.stockholdersEquity),
+        cash: wrapMetric(item.cashAndCashEquivalents),
+        shortTermInvestments: wrapMetric(item.cashCashEquivalentsAndShortTermInvestments),
+        netReceivables: wrapMetric(item.receivables),
+        inventory: wrapMetric(item.inventory),
+        totalCurrentAssets: wrapMetric(item.currentAssets),
+        totalCurrentLiabilities: wrapMetric(item.currentLiabilities),
+        longTermDebt: wrapMetric(item.longTermDebt),
+        propertyPlantEquipment: wrapMetric(item.netPPE),
+        goodWill: wrapMetric(item.goodwill),
+        intangibleAssets: wrapMetric(item.otherIntangibleAssets),
+        retainedEarnings: wrapMetric(item.retainedEarnings),
+        otherAssets: wrapMetric(item.otherAssets),
+        otherLiab: wrapMetric(item.otherLiabilities)
       };
 
-      dataArray.push(periodData as any);
+      dataArray.push(periodData);
     }
 
     return bsData;
@@ -354,7 +376,7 @@ async function fetchBalanceSheet(
 async function fetchIncomeStatement(
   symbol: string,
   frequency: 'annual' | 'quarterly' = 'annual'
-): Promise<IncomeStatement> {
+): Promise<StatementPeriodData> {
   try {
     const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
       module: 'financials',
@@ -362,7 +384,7 @@ async function fetchIncomeStatement(
       period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result || result.length === 0) {
+    if (result.length === 0) {
       throw new YahooFinanceError(
         `Income statement data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -374,8 +396,7 @@ async function fetchIncomeStatement(
       );
     }
 
-    // Convert fundamentalsTimeSeries format to legacy IncomeStatement format
-    const isData: IncomeStatement = {
+    const isData: StatementPeriodData = {
       maxAge: 0,
       annual: [],
       quarterly: []
@@ -383,33 +404,36 @@ async function fetchIncomeStatement(
 
     const dataArray = frequency === 'annual' ? isData.annual : isData.quarterly;
 
-    // Cast result to Financials type
-    for (const item of result as any) {
-      const periodData: Record<string, unknown> = {
+    const rows = result.filter(
+      (item): item is FundamentalsTimeSeriesFinancialsResult => item.TYPE === 'FINANCIALS'
+    );
+
+    for (const item of rows) {
+      const periodData: StatementPeriodRow = {
         endDate: {
           fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
           raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
         },
-        totalRevenue: item.totalRevenue ? { fmt: item.totalRevenue.toString(), raw: item.totalRevenue } : undefined,
-        costOfRevenue: item.costOfRevenue ? { fmt: item.costOfRevenue.toString(), raw: item.costOfRevenue } : undefined,
-        grossProfit: item.grossProfit ? { fmt: item.grossProfit.toString(), raw: item.grossProfit } : undefined,
-        operatingIncome: item.operatingIncome ? { fmt: item.operatingIncome.toString(), raw: item.operatingIncome } : undefined,
-        ebitda: item.EBITDA ? { fmt: item.EBITDA.toString(), raw: item.EBITDA } : undefined,
-        netIncome: item.netIncome ? { fmt: item.netIncome.toString(), raw: item.netIncome } : undefined,
-        epsBasic: item.basicEPS ? { fmt: item.basicEPS.toString(), raw: item.basicEPS } : undefined,
-        epsDiluted: item.dilutedEPS ? { fmt: item.dilutedEPS.toString(), raw: item.dilutedEPS } : undefined,
-        interestExpense: item.interestExpenseNonOperating ? { fmt: item.interestExpenseNonOperating.toString(), raw: item.interestExpenseNonOperating } : undefined,
-        taxProvision: item.taxProvision ? { fmt: item.taxProvision.toString(), raw: item.taxProvision } : undefined,
-        researchAndDevelopment: item.researchAndDevelopment ? { fmt: item.researchAndDevelopment.toString(), raw: item.researchAndDevelopment } : undefined,
-        sellingGeneralAndAdministrative: item.sellingGeneralAndAdministration ? { fmt: item.sellingGeneralAndAdministration.toString(), raw: item.sellingGeneralAndAdministration } : undefined,
-        operatingExpense: item.operatingExpense ? { fmt: item.operatingExpense.toString(), raw: item.operatingExpense } : undefined,
-        otherOperatingExpenses: item.otherOperatingExpenses ? { fmt: item.otherOperatingExpenses.toString(), raw: item.otherOperatingExpenses } : undefined,
-        nonRecurringEvents: item.totalUnusualItems ? { fmt: item.totalUnusualItems.toString(), raw: item.totalUnusualItems } : undefined,
-        nonOperatingInterestIncome: item.interestIncomeNonOperating ? { fmt: item.interestIncomeNonOperating.toString(), raw: item.interestIncomeNonOperating } : undefined,
-        otherIncomeExpense: item.otherIncomeExpense ? { fmt: item.otherIncomeExpense.toString(), raw: item.otherIncomeExpense } : undefined
+        totalRevenue: wrapMetric(item.totalRevenue),
+        costOfRevenue: wrapMetric(item.costOfRevenue),
+        grossProfit: wrapMetric(item.grossProfit),
+        operatingIncome: wrapMetric(item.operatingIncome),
+        ebitda: wrapMetric(item.EBITDA),
+        netIncome: wrapMetric(item.netIncome),
+        epsBasic: wrapMetric(item.basicEPS),
+        epsDiluted: wrapMetric(item.dilutedEPS),
+        interestExpense: wrapMetric(item.interestExpenseNonOperating),
+        taxProvision: wrapMetric(item.taxProvision),
+        researchAndDevelopment: wrapMetric(item.researchAndDevelopment),
+        sellingGeneralAndAdministrative: wrapMetric(item.sellingGeneralAndAdministration),
+        operatingExpense: wrapMetric(item.operatingExpense),
+        otherOperatingExpenses: wrapMetric(item.otherOperatingExpenses),
+        nonRecurringEvents: wrapMetric(item.totalUnusualItems),
+        nonOperatingInterestIncome: wrapMetric(item.interestIncomeNonOperating),
+        otherIncomeExpense: wrapMetric(item.otherIncomeExpense)
       };
 
-      dataArray.push(periodData as any);
+      dataArray.push(periodData);
     }
 
     return isData;
@@ -432,7 +456,7 @@ async function fetchIncomeStatement(
 async function fetchCashFlowStatement(
   symbol: string,
   frequency: 'annual' | 'quarterly' = 'annual'
-): Promise<CashFlowStatement> {
+): Promise<StatementPeriodData> {
   try {
     const result = await yahooFinance.fundamentalsTimeSeries(symbol, {
       module: 'cash-flow',
@@ -440,7 +464,7 @@ async function fetchCashFlowStatement(
       period1: new Date(2000, 0, 1) // January 1, 2000
     });
 
-    if (!result || result.length === 0) {
+    if (result.length === 0) {
       throw new YahooFinanceError(
         `Cash flow statement data not available for ${symbol}`,
         YF_ERR_DATA_INCOMPLETE,
@@ -452,8 +476,7 @@ async function fetchCashFlowStatement(
       );
     }
 
-    // Convert fundamentalsTimeSeries format to legacy CashFlowStatement format
-    const cfData: CashFlowStatement = {
+    const cfData: StatementPeriodData = {
       maxAge: 0,
       annual: [],
       quarterly: []
@@ -461,29 +484,32 @@ async function fetchCashFlowStatement(
 
     const dataArray = frequency === 'annual' ? cfData.annual : cfData.quarterly;
 
-    // Cast result to CashFlow type
-    for (const item of result as any) {
-      const periodData: Record<string, unknown> = {
+    const rows = result.filter(
+      (item): item is FundamentalsTimeSeriesCashFlowResult => item.TYPE === 'CASH_FLOW'
+    );
+
+    for (const item of rows) {
+      const periodData: StatementPeriodRow = {
         endDate: {
           fmt: item.date instanceof Date ? item.date.toISOString().split('T')[0] : '',
           raw: item.date instanceof Date ? item.date.getTime() / 1000 : 0
         },
-        totalCashFromOperatingActivities: item.operatingCashFlow ? { fmt: item.operatingCashFlow.toString(), raw: item.operatingCashFlow } : undefined,
-        capitalExpenditures: item.capitalExpenditure ? { fmt: item.capitalExpenditure.toString(), raw: item.capitalExpenditure } : undefined,
-        totalCashFromFinancingActivities: item.cashFlowFromContinuingFinancingActivities ? { fmt: item.cashFlowFromContinuingFinancingActivities.toString(), raw: item.cashFlowFromContinuingFinancingActivities } : undefined,
-        totalCashFromInvestingActivities: item.cashFlowFromContinuingInvestingActivities ? { fmt: item.cashFlowFromContinuingInvestingActivities.toString(), raw: item.cashFlowFromContinuingInvestingActivities } : undefined,
-        depreciation: item.depreciationAndAmortization ? { fmt: item.depreciationAndAmortization.toString(), raw: item.depreciationAndAmortization } : undefined,
-        dividendsPaid: item.commonStockDividendPaid ? { fmt: item.commonStockDividendPaid.toString(), raw: item.commonStockDividendPaid } : undefined,
-        stockRepurchases: item.repurchaseOfCapitalStock ? { fmt: item.repurchaseOfCapitalStock.toString(), raw: item.repurchaseOfCapitalStock } : undefined,
-        changeInCash: item.changesInCash ? { fmt: item.changesInCash.toString(), raw: item.changesInCash } : undefined,
-        freeCashFlow: item.freeCashFlow ? { fmt: item.freeCashFlow.toString(), raw: item.freeCashFlow } : undefined,
-        netBorrowings: item.netIssuancePaymentsOfDebt ? { fmt: item.netIssuancePaymentsOfDebt.toString(), raw: item.netIssuancePaymentsOfDebt } : undefined,
-        otherCashflowsFromInvestingActivities: item.netOtherInvestingChanges ? { fmt: item.netOtherInvestingChanges.toString(), raw: item.netOtherInvestingChanges } : undefined,
-        otherCashflowsFromFinancingActivities: item.netOtherFinancingCharges ? { fmt: item.netOtherFinancingCharges.toString(), raw: item.netOtherFinancingCharges } : undefined,
-        effectOfExchangeRateOnCash: item.effectOfExchangeRateChanges ? { fmt: item.effectOfExchangeRateChanges.toString(), raw: item.effectOfExchangeRateChanges } : undefined
+        totalCashFromOperatingActivities: wrapMetric(item.operatingCashFlow),
+        capitalExpenditures: wrapMetric(item.capitalExpenditure),
+        totalCashFromFinancingActivities: wrapMetric(item.cashFlowFromContinuingFinancingActivities),
+        totalCashFromInvestingActivities: wrapMetric(item.cashFlowFromContinuingInvestingActivities),
+        depreciation: wrapMetric(item.depreciationAndAmortization),
+        dividendsPaid: wrapMetric(item.commonStockDividendPaid),
+        stockRepurchases: wrapMetric(item.repurchaseOfCapitalStock),
+        changeInCash: wrapMetric(item.changesInCash),
+        freeCashFlow: wrapMetric(item.freeCashFlow),
+        netBorrowings: wrapMetric(item.netIssuancePaymentsOfDebt),
+        otherCashflowsFromInvestingActivities: wrapMetric(item.netOtherInvestingChanges),
+        otherCashflowsFromFinancingActivities: wrapMetric(item.netOtherFinancingCharges),
+        effectOfExchangeRateOnCash: wrapMetric(item.effectOfExchangeRateChanges)
       };
 
-      dataArray.push(periodData as any);
+      dataArray.push(periodData);
     }
 
     return cfData;
@@ -519,14 +545,14 @@ async function getBalanceSheet(
   const data = await fetchBalanceSheet(symbol, frequency);
   const statementsData = frequency === 'annual' ? data.annual : data.quarterly;
 
-  if (!statementsData || statementsData.length === 0) {
+  if (statementsData.length === 0) {
     if (frequency === 'annual') {
       const quarterlyData = await fetchBalanceSheet(symbol, 'quarterly');
       const quarterlyStatements = quarterlyData.quarterly;
-      if (quarterlyStatements && quarterlyStatements.length > 0) {
+      if (quarterlyStatements.length > 0) {
         const statements = quarterlyStatements
           .slice(0, limit)
-          .map((item) => convertBalanceSheetToStatementData(item as unknown as Record<string, unknown>));
+          .map((item) => convertBalanceSheetToStatementData(item));
 
         for (const stmt of statements) {
           stmt.period = 'quarterly';
@@ -552,7 +578,7 @@ async function getBalanceSheet(
 
   const statements = statementsData
     .slice(0, limit)
-    .map((item) => convertBalanceSheetToStatementData(item as unknown as Record<string, unknown>));
+    .map((item) => convertBalanceSheetToStatementData(item));
 
   const meta = buildStatementMetadata(statements, false, 0, EXPECTED_BS_FIELDS);
   const result = { statements, meta };
@@ -576,14 +602,14 @@ async function getIncomeStatement(
   const data = await fetchIncomeStatement(symbol, frequency);
   const statementsData = frequency === 'annual' ? data.annual : data.quarterly;
 
-  if (!statementsData || statementsData.length === 0) {
+  if (statementsData.length === 0) {
     if (frequency === 'annual') {
       const quarterlyData = await fetchIncomeStatement(symbol, 'quarterly');
       const quarterlyStatements = quarterlyData.quarterly;
-      if (quarterlyStatements && quarterlyStatements.length > 0) {
+      if (quarterlyStatements.length > 0) {
         const statements = quarterlyStatements
           .slice(0, limit)
-          .map((item) => convertIncomeStatementToStatementData(item as unknown as Record<string, unknown>));
+          .map((item) => convertIncomeStatementToStatementData(item));
 
         for (const stmt of statements) {
           stmt.period = 'quarterly';
@@ -609,7 +635,7 @@ async function getIncomeStatement(
 
   const statements = statementsData
     .slice(0, limit)
-    .map((item) => convertIncomeStatementToStatementData(item as unknown as Record<string, unknown>));
+    .map((item) => convertIncomeStatementToStatementData(item));
 
   const meta = buildStatementMetadata(statements, false, 0, EXPECTED_IS_FIELDS);
   const result = { statements, meta };
@@ -633,14 +659,14 @@ async function getCashFlowStatement(
   const data = await fetchCashFlowStatement(symbol, frequency);
   const statementsData = frequency === 'annual' ? data.annual : data.quarterly;
 
-  if (!statementsData || statementsData.length === 0) {
+  if (statementsData.length === 0) {
     if (frequency === 'annual') {
       const quarterlyData = await fetchCashFlowStatement(symbol, 'quarterly');
       const quarterlyStatements = quarterlyData.quarterly;
-      if (quarterlyStatements && quarterlyStatements.length > 0) {
+      if (quarterlyStatements.length > 0) {
         const statements = quarterlyStatements
           .slice(0, limit)
-          .map((item) => convertCashFlowToStatementData(item as unknown as Record<string, unknown>));
+          .map((item) => convertCashFlowToStatementData(item));
 
         for (const stmt of statements) {
           stmt.period = 'quarterly';
@@ -666,7 +692,7 @@ async function getCashFlowStatement(
 
   const statements = statementsData
     .slice(0, limit)
-    .map((item) => convertCashFlowToStatementData(item as unknown as Record<string, unknown>));
+    .map((item) => convertCashFlowToStatementData(item));
 
   const meta = buildStatementMetadata(statements, false, 0, EXPECTED_CF_FIELDS);
   const result = { statements, meta };
@@ -682,6 +708,8 @@ export async function getBalanceSheetTool(
   const parsed = FinancialsInputSchema.parse(args);
   const { symbol, frequency = 'annual', limit = DEFAULT_LIMIT } = parsed;
 
+  InputValidator.validateSymbol(symbol);
+
   const result = await getBalanceSheet(symbol, frequency, limit, financialsToolCache);
 
   const statements = result.statements.map((stmt) => ({
@@ -691,7 +719,7 @@ export async function getBalanceSheetTool(
     balanceSheet: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))
     ),
-    fieldAvailability: buildFieldAvailability(stmt as Record<string, number | null>, EXPECTED_BS_FIELDS)
+    fieldAvailability: buildFieldAvailability(stmt, EXPECTED_BS_FIELDS)
   }));
 
   const output = {
@@ -724,7 +752,7 @@ export async function getIncomeStatementTool(
     incomeStatement: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))
     ),
-    fieldAvailability: buildFieldAvailability(stmt as Record<string, number | null>, EXPECTED_IS_FIELDS)
+    fieldAvailability: buildFieldAvailability(stmt, EXPECTED_IS_FIELDS)
   }));
 
   const output = {
@@ -757,7 +785,7 @@ export async function getCashFlowStatementTool(
     cashFlowStatement: Object.fromEntries(
       Object.entries(stmt).filter(([key]) => !['period', 'startDate', 'endDate'].includes(key))
     ),
-    fieldAvailability: buildFieldAvailability(stmt as Record<string, number | null>, EXPECTED_CF_FIELDS)
+    fieldAvailability: buildFieldAvailability(stmt, EXPECTED_CF_FIELDS)
   }));
 
   const output = {
@@ -769,7 +797,7 @@ export async function getCashFlowStatementTool(
   return FinancialsOutputSchema.parse(output);
 }
 
-export function getFinancialsToolDefinitions() {
+export function getFinancialsToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'get_balance_sheet',

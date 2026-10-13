@@ -2,7 +2,6 @@ import { z } from 'zod';
 import type { HistoricalPriceResult, HistoricalPriceData, HistoricalInterval } from '../types/yahoo-finance.js';
 import { YahooFinanceClient } from '../services/yahoo-finance.js';
 import { DataQualityReporter } from '../utils/data-completion.js';
-import { InputValidator } from '../utils/security.js';
 
 type HistoricalPriceWithFlags = {
   date: string;
@@ -305,9 +304,9 @@ export class HistoricalTools {
         warnings,
         integrityFlags: processedData.flatMap(item => {
           const flags: string[] = [];
-          if (item.isGap) {flags.push('gap_detected');}
-          if (item.isSplit) {flags.push('split_detected');}
-          if (item.hasNulls) {flags.push('null_values');}
+          if (item.isGap === true) {flags.push('gap_detected');}
+          if (item.isSplit === true) {flags.push('split_detected');}
+          if (item.hasNulls === true) {flags.push('null_values');}
           return flags;
         })
       }
@@ -368,7 +367,7 @@ export class HistoricalTools {
         try {
           const result = await this.client.getHistoricalPrices(symbol, {
             period1: new Date(startDate),
-            period2: endDate ? new Date(endDate) : new Date(),
+            period2: endDate !== undefined ? new Date(endDate) : new Date(),
             interval: retryInterval
           });
 
@@ -440,7 +439,6 @@ export class HistoricalTools {
       };
 
       if (validate && i > 0) {
-        const previousItem = data[i - 1];
         const previousProcessed = processed[i - 1];
 
         processedItem.isGap = this.validator.detectGap(processedItem, previousProcessed);

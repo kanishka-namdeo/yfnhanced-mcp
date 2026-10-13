@@ -56,7 +56,7 @@ class LRUCache<T> {
 
   get(key: string): T | null {
     const entry = this.entries.get(key);
-    if (!entry) {
+    if (entry === undefined) {
       return null;
     }
 
@@ -80,7 +80,7 @@ class LRUCache<T> {
   evict(): void {
     if (this.order.length === 0) {return;}
     const lruKey = this.order.shift();
-    if (lruKey) {
+    if (lruKey !== undefined) {
       this.entries.delete(lruKey);
     }
   }
@@ -174,7 +174,7 @@ class StaleWhileRevalidate<T> {
     this.ttl = ttl;
   }
 
-  async get(key: string, revalidateFn: () => Promise<T>): Promise<T> {
+  get(key: string, revalidateFn: () => Promise<T>): Promise<T> {
     const entry = this.cache.get(key);
     
     if (!entry) {
@@ -185,12 +185,13 @@ class StaleWhileRevalidate<T> {
       this.validate(key, revalidateFn).catch(() => {});
     }
 
-    return entry.value;
+    return Promise.resolve(entry.value);
   }
 
   async validate(key: string, fn: () => Promise<T>): Promise<T> {
-    if (this.pendingValidations.has(key)) {
-      return this.pendingValidations.get(key)!;
+    const pending = this.pendingValidations.get(key);
+    if (pending !== undefined) {
+      return pending;
     }
 
     const promise = this.executeValidation(key, fn);
@@ -235,24 +236,24 @@ export class Cache implements CacheInterface {
     this.initializeTTLMap();
   }
 
-  async get<T>(key: string): Promise<T | null> {
+  get<T>(key: string): Promise<T | null> {
     const entry = this.lruCache.get(key);
     if (!entry) {
       this.metrics.recordMiss();
-      return null;
+      return Promise.resolve(null);
     }
 
     if (entry.isExpired()) {
       this.lruCache.delete(key);
       this.metrics.recordMiss();
-      return null;
+      return Promise.resolve(null);
     }
 
     this.metrics.recordHit();
-    return entry.value as T;
+    return Promise.resolve(entry.value as T);
   }
 
-  async set<T>(key: string, value: T, ttl?: number): Promise<void> {
+  set<T>(key: string, value: T, ttl?: number): Promise<void> {
     const effectiveTTL = ttl ?? this.getTTLForType(key);
     const entry = new CacheEntryClass(value, effectiveTTL);
     
@@ -265,26 +266,28 @@ export class Cache implements CacheInterface {
       }
       this.lruCache.set(key, entry);
     }
+    return Promise.resolve();
   }
 
-  async delete(key: string): Promise<boolean> {
-    return this.lruCache.delete(key);
+  delete(key: string): Promise<boolean> {
+    return Promise.resolve(this.lruCache.delete(key));
   }
 
-  async clear(): Promise<void> {
+  clear(): Promise<void> {
     this.lruCache.clear();
     this.metrics.reset();
+    return Promise.resolve();
   }
 
-  async has(key: string): Promise<boolean> {
+  has(key: string): Promise<boolean> {
     const entry = this.lruCache.get(key);
-    if (!entry) {return false;}
+    if (!entry) {return Promise.resolve(false);}
     
     if (entry.isExpired()) {
       this.lruCache.delete(key);
-      return false;
+      return Promise.resolve(false);
     }
-    return true;
+    return Promise.resolve(true);
   }
 
   getStats(): CacheStats {
@@ -315,31 +318,31 @@ export class Cache implements CacheInterface {
     };
   }
 
-  async getEntry<T>(key: string): Promise<CacheEntryType<T> | null> {
+  getEntry<T>(key: string): Promise<CacheEntryType<T> | null> {
     const entry = this.lruCache.get(key);
     if (!entry) {
-      return null;
+      return Promise.resolve(null);
     }
 
     if (entry.isExpired()) {
-      return null;
+      return Promise.resolve(null);
     }
 
-    return this.convertToCacheEntry(entry as CacheEntryClass<T>);
+    return Promise.resolve(this.convertToCacheEntry<T>(entry));
   }
 
-  async keys(): Promise<string[]> {
-    return this.lruCache.keys();
+  keys(): Promise<string[]> {
+    return Promise.resolve(this.lruCache.keys());
   }
 
-  async touch(key: string, ttl?: number): Promise<boolean> {
+  touch(key: string, ttl?: number): Promise<boolean> {
     const entry = this.lruCache.get(key);
     if (!entry) {
-      return false;
+      return Promise.resolve(false);
     }
 
     if (entry.isExpired()) {
-      return false;
+      return Promise.resolve(false);
     }
 
     entry.timestamp = Date.now();
@@ -348,10 +351,10 @@ export class Cache implements CacheInterface {
     }
 
     this.lruCache.updateAccessOrder(key);
-    return true;
+    return Promise.resolve(true);
   }
 
-  async mget<T>(keys: string[]): Promise<(T | null)[]> {
+  mget<T>(keys: string[]): Promise<(T | null)[]> {
     return Promise.all(keys.map(key => this.get<T>(key)));
   }
 
@@ -369,11 +372,14 @@ export class Cache implements CacheInterface {
     return count;
   }
 
-  async scan(pattern: string, count?: number): Promise<string[]> {
-    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
-    const allKeys = this.lruCache.keys();
-    const filtered = allKeys.filter(key => regex.test(key));
-    return count ? filtered.slice(0, count) : filtered;
+  // Executor keeps the body synchronous and an invalid RegExp pattern rejecting, as `async` did.
+  scan(pattern: string, count?: number): Promise<string[]> {
+    return new Promise<string[]>((resolve) => {
+      const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+      const allKeys = this.lruCache.keys();
+      const filtered = allKeys.filter(key => regex.test(key));
+      resolve(count !== undefined && count !== 0 && !Number.isNaN(count) ? filtered.slice(0, count) : filtered);
+    });
   }
 
   getConfig(): CacheConfig {

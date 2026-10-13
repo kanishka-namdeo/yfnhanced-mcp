@@ -1,8 +1,8 @@
 import { yahooFinance, toOptionContract } from '../services/yahoo-finance.js';
 import { OptionsInputSchema, OptionsOutputSchema } from '../schemas/index.js';
 import { YahooFinanceError, YF_ERR_DATA_INCOMPLETE, YF_ERR_DATA_UNAVAILABLE } from '../types/errors.js';
-import { DataQualityReporter } from '../utils/data-completion.js';
-import type { OptionsResult, OptionsExpiration, RawQuote, RawOptionsResult } from '../types/yahoo-finance.js';
+import type { ToolDefinition } from '../types/mcp.js';
+import type { OptionsResult, RawQuote, RawOptionsResult } from '../types/yahoo-finance.js';
 import { InputValidator } from '../utils/security.js';
 
 const OPTIONS_CACHE_TTL = 3600000;
@@ -24,12 +24,23 @@ class OptionsToolCache {
     return entry.data;
   }
 
+  getAge(key: string): number | null {
+    const entry = this.cache.get(key);
+    if (!entry) {return null;}
+    const age = Date.now() - entry.timestamp;
+    if (age > OPTIONS_CACHE_TTL) {
+      this.cache.delete(key);
+      return null;
+    }
+    return age;
+  }
+
   set(key: string, data: OptionsResult): void {
     this.cache.set(key, { data, timestamp: Date.now() });
   }
 
   generateCacheKey(symbol: string, expiration: string | null, includeGreeks: boolean): string {
-    return `options:${symbol}:${expiration || 'default'}:${includeGreeks}`;
+    return `options:${symbol}:${expiration !== null && expiration !== '' ? expiration : 'default'}:${includeGreeks}`;
   }
 
   clear(): void {
@@ -56,9 +67,9 @@ function calculateDelta(
     const a5 = 1.061405429;
     const p = 0.3275911;
     const sign = x < 0 ? -1 : 1;
-    x = Math.abs(x) / Math.sqrt(2);
-    const t = 1.0 / (1.0 + p * x);
-    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+    const u = Math.abs(x) / Math.sqrt(2);
+    const t = 1.0 / (1.0 + p * u);
+    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-u * u);
     return 0.5 * (1.0 + sign * y);
   };
 
@@ -100,9 +111,9 @@ function calculateTheta(
     const a5 = 1.061405429;
     const p = 0.3275911;
     const sign = x < 0 ? -1 : 1;
-    x = Math.abs(x) / Math.sqrt(2);
-    const t = 1.0 / (1.0 + p * x);
-    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+    const u = Math.abs(x) / Math.sqrt(2);
+    const t = 1.0 / (1.0 + p * u);
+    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-u * u);
     return 0.5 * (1.0 + sign * y);
   };
   const pdf = (x: number): number => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
@@ -267,8 +278,8 @@ function convertOptionsExpiration(
   }>;
 } {
   const expirationDateRaw = typeof item.expirationDate === 'number' ? item.expirationDate : 0;
-  const expirationDate = expirationDateRaw > 0 ? new Date(expirationDateRaw * 1000).toISOString().split('T')[0] : '';
-  const timeToExpiration = expirationDateRaw > 0 ? (expirationDateRaw * 1000 - Date.now()) / (365 * 24 * 60 * 60 * 1000) : 0;
+  const expirationDate = expirationDateRaw > 0 ? new Date(expirationDateRaw).toISOString().split('T')[0] : '';
+  const timeToExpiration = expirationDateRaw > 0 ? (expirationDateRaw - Date.now()) / (365 * 24 * 60 * 60 * 1000) : 0;
 
   const calls = Array.isArray(item.calls) ? item.calls : [];
   const puts = Array.isArray(item.puts) ? item.puts : [];
@@ -392,9 +403,8 @@ async function getOptionsData(
 
   if (cached) {
     const cachedOptions = cached.options[0];
-    const timeToExpiration = cachedOptions ? (cachedOptions.date - Date.now() / 1000) / (365 * 24 * 60 * 60) : 0;
     const spotPrice = typeof cached.quote?.regularMarketPrice === 'number' ? cached.quote.regularMarketPrice : 0;
-    const convertedOptions = convertOptionsExpiration(cachedOptions as Record<string, unknown>, spotPrice, includeGreeks);
+    const convertedOptions = convertOptionsExpiration(cachedOptions, spotPrice, includeGreeks);
 
     return {
       options: {
@@ -414,7 +424,7 @@ async function getOptionsData(
 
   const data = await fetchOptions(symbol);
 
-  if (!data.expirationDates || data.expirationDates.length === 0) {
+  if (data.expirationDates.length === 0) {
     throw new YahooFinanceError(
       `No options expirations available for ${symbol}`,
       YF_ERR_DATA_INCOMPLETE,
@@ -428,33 +438,33 @@ async function getOptionsData(
 
   let selectedExpiration = expiration;
 
-  if (selectedExpiration) {
-    const requestedDate = new Date(selectedExpiration).getTime() / 1000;
+  if (selectedExpiration !== null) {
+    const requestedDate = new Date(selectedExpiration).getTime();
     if (!data.expirationDates.includes(requestedDate)) {
       const closestDate = data.expirationDates.reduce((prev, curr) => {
         return Math.abs(curr - requestedDate) < Math.abs(prev - requestedDate) ? curr : prev;
       });
-      selectedExpiration = new Date(closestDate * 1000).toISOString().split('T')[0];
+      selectedExpiration = new Date(closestDate).toISOString().split('T')[0];
     }
   } else {
-    selectedExpiration = new Date(data.expirationDates[0] * 1000).toISOString().split('T')[0];
+    selectedExpiration = new Date(data.expirationDates[0]).toISOString().split('T')[0];
   }
 
-  const requestedDateNum = expiration ? new Date(expiration).getTime() / 1000 : 0;
+  const requestedDateNum = expiration !== null ? new Date(expiration).getTime() : 0;
   const fallbackExpiration = requestedDateNum > 0 && requestedDateNum !== data.expirationDates[0];
 
   const spotPrice = typeof data.quote?.regularMarketPrice === 'number' ? data.quote.regularMarketPrice : 0;
 
   let selectedOptions = data.options[0];
-  if (expiration) {
-    const targetDate = new Date(selectedExpiration).getTime() / 1000;
+  if (expiration !== null) {
+    const targetDate = new Date(selectedExpiration).getTime();
     const matchingOption = data.options.find((opt) => opt.date === targetDate);
     if (matchingOption) {
       selectedOptions = matchingOption;
     }
   }
 
-  const convertedOptions = convertOptionsExpiration(selectedOptions as Record<string, unknown>, spotPrice, includeGreeks);
+  const convertedOptions = convertOptionsExpiration(selectedOptions, spotPrice, includeGreeks);
 
   cache.set(cacheKey, data);
 
@@ -496,7 +506,7 @@ function buildOptionsMetadata(
     warnings.push('No option contracts available for selected expiration');
   }
 
-  if (requestedExpiration && fallbackExpiration) {
+  if (requestedExpiration !== null && fallbackExpiration) {
     warnings.push('Requested expiration not available, using closest available date');
   }
 
@@ -514,7 +524,7 @@ function buildOptionsMetadata(
   const completenessScore = totalContracts > 0 ? 1 : 0;
 
   const availableExpirations = expirationDates
-    .map((date) => new Date(date * 1000).toISOString().split('T')[0])
+    .map((date) => new Date(date).toISOString().split('T')[0])
     .sort();
 
   const lastUpdated = new Date(Date.now() - dataAge).toISOString();
@@ -543,11 +553,11 @@ export async function getOptionsTool(
 
   InputValidator.validateSymbol(symbol);
 
-  if (expiration) {
+  if (expiration !== undefined && expiration !== '') {
     InputValidator.validateString(expiration, 'expiration');
   }
 
-  if (date) {
+  if (date !== undefined && date !== '') {
     InputValidator.validateDate(date, 'date');
   }
 
@@ -555,14 +565,19 @@ export async function getOptionsTool(
     InputValidator.validateString(optionsType, 'optionsType');
   }
 
-  const cacheKey = optionsToolCache.generateCacheKey(symbol, expiration || date || null, includeGreeks);
-  const fromCache = optionsToolCache.get(cacheKey) !== null;
-  const startTime = Date.now();
+  const selectedExpiration =
+    expiration !== undefined && expiration !== ''
+      ? expiration
+      : date !== undefined && date !== ''
+        ? date
+        : null;
 
-  const selectedExpiration = expiration || date || null;
+  const cacheKey = optionsToolCache.generateCacheKey(symbol, selectedExpiration, includeGreeks);
+  const fromCache = optionsToolCache.get(cacheKey) !== null;
+
   const data = await getOptionsData(symbol, selectedExpiration, includeGreeks, optionsToolCache);
 
-  const dataAge = fromCache ? startTime - optionsToolCache.generateCacheKey(symbol, selectedExpiration || '', includeGreeks).length : 0;
+  const dataAge = fromCache ? (optionsToolCache.getAge(cacheKey) ?? 0) : 0;
 
   let filteredOptions = data.options;
 
@@ -590,14 +605,14 @@ export async function getOptionsTool(
   const output = {
     symbol,
     options: filteredOptions,
-    expirationDates: data.expirationDates.map((date) => new Date(date * 1000).toISOString().split('T')[0]),
+    expirationDates: data.expirationDates.map((date) => new Date(date).toISOString().split('T')[0]),
     meta
   } as unknown;
 
   return OptionsOutputSchema.parse(output);
 }
 
-export function getOptionsToolDefinitions() {
+export function getOptionsToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'get_options',

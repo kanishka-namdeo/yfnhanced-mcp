@@ -1,534 +1,291 @@
-import { getDefaultConfig, getServerInfoDefaults, getCapabilitiesDefaults, getTransportDefaults, getRateLimitDefaults, getCacheDefaults, getRetryDefaults, getCircuitBreakerDefaults, getQueueDefaults, getDataCompletionDefaults, getLoggingDefaults, getNetworkDefaults, getYahooFinanceDefaults } from '../../../src/config/defaults';
+import {
+  defaultRateLimitConfig,
+  defaultCacheConfig,
+  defaultRetryConfig,
+  defaultCircuitBreakerConfig,
+  defaultQueueConfig,
+  defaultDataCompletionConfig,
+  defaultLoggingConfig,
+  defaultNetworkConfig,
+  defaultYahooFinanceConfig,
+  defaultSecurityConfig,
+  defaultServerInfoConfig,
+  defaultCapabilitiesConfig,
+  defaultConfig
+} from '../../../src/config/defaults';
 
-describe('getDefaultConfig', () => {
-  test('should return default config', () => {
-    const config = getDefaultConfig();
-    expect(config).toBeDefined();
-    expect(config).toHaveProperty('serverInfo');
-    expect(config).toHaveProperty('capabilities');
-    expect(config).toHaveProperty('transport');
+// `src/config/defaults.ts` exports plain consts, not factory functions.
+// There is no `getDefaultConfig` and no `get*Defaults()`; `defaultConfig` is the
+// aggregate and each section is its own exported `default*Config` const.
+
+describe('defaultConfig aggregate', () => {
+  test('exposes exactly the twelve documented sections', () => {
+    expect(Object.keys(defaultConfig).sort()).toEqual([
+      'cache',
+      'capabilities',
+      'circuitBreaker',
+      'dataCompletion',
+      'logging',
+      'network',
+      'queue',
+      'rateLimit',
+      'retry',
+      'security',
+      'serverInfo',
+      'yahooFinance'
+    ]);
   });
 
-  test('should have valid serverInfo', () => {
-    const config = getDefaultConfig();
-    expect(config.serverInfo).toHaveProperty('name');
-    expect(config.serverInfo).toHaveProperty('version');
-    expect(config.serverInfo).toHaveProperty('protocolVersion');
+  test('has no transport key (transport is hardcoded in the server entrypoint)', () => {
+    expect(defaultConfig).not.toHaveProperty('transport');
   });
 
-  test('should have valid transport', () => {
-    const config = getDefaultConfig();
-    expect(['stdio', 'sse', 'http']).toContain(config.transport);
+  test('composes the per-section default consts by reference', () => {
+    expect(defaultConfig.rateLimit).toBe(defaultRateLimitConfig);
+    expect(defaultConfig.cache).toBe(defaultCacheConfig);
+    expect(defaultConfig.retry).toBe(defaultRetryConfig);
+    expect(defaultConfig.circuitBreaker).toBe(defaultCircuitBreakerConfig);
+    expect(defaultConfig.queue).toBe(defaultQueueConfig);
+    expect(defaultConfig.dataCompletion).toBe(defaultDataCompletionConfig);
+    expect(defaultConfig.logging).toBe(defaultLoggingConfig);
+    expect(defaultConfig.network).toBe(defaultNetworkConfig);
+    expect(defaultConfig.yahooFinance).toBe(defaultYahooFinanceConfig);
+    expect(defaultConfig.serverInfo).toBe(defaultServerInfoConfig);
+    expect(defaultConfig.capabilities).toBe(defaultCapabilitiesConfig);
+    expect(defaultConfig.security).toBe(defaultSecurityConfig);
   });
 
-  test('should have valid rateLimit', () => {
-    const config = getDefaultConfig();
-    expect(config.rateLimit).toBeDefined();
-    expect(config.rateLimit).toHaveProperty('strategy');
-    expect(config.rateLimit).toHaveProperty('maxRequests');
-    expect(config.rateLimit).toHaveProperty('windowMs');
-  });
-
-  test('should have valid cache', () => {
-    const config = getDefaultConfig();
-    expect(config.cache).toBeDefined();
-    expect(config.cache).toHaveProperty('enabled');
-    expect(config.cache).toHaveProperty('store');
-    expect(config.cache).toHaveProperty('ttl');
-  });
-
-  test('should have valid retry', () => {
-    const config = getDefaultConfig();
-    expect(config.retry).toBeDefined();
-    expect(config.retry).toHaveProperty('enabled');
-    expect(config.retry).toHaveProperty('maxRetries');
-    expect(config.retry).toHaveProperty('strategy');
-  });
-
-  test('should have valid circuitBreaker', () => {
-    const config = getDefaultConfig();
-    expect(config.circuitBreaker).toBeDefined();
-    expect(config.circuitBreaker).toHaveProperty('enabled');
-    expect(config.circuitBreaker).toHaveProperty('timeoutMs');
-    expect(config.circuitBreaker).toHaveProperty('errorThresholdPercentage');
-  });
-
-  test('should have valid queue', () => {
-    const config = getDefaultConfig();
-    expect(config.queue).toBeDefined();
-    expect(config.queue).toHaveProperty('enabled');
-    expect(config.queue).toHaveProperty('maxSize');
-    expect(config.queue).toHaveProperty('strategy');
-  });
-
-  test('should have valid dataCompletion', () => {
-    const config = getDefaultConfig();
-    expect(config.dataCompletion).toBeDefined();
-    expect(config.dataCompletion).toHaveProperty('enabled');
-    expect(config.dataCompletion).toHaveProperty('level');
-    expect(config.dataCompletion).toHaveProperty('allowPartial');
-  });
-
-  test('should have valid logging', () => {
-    const config = getDefaultConfig();
-    expect(config.logging).toBeDefined();
-    expect(config.logging).toHaveProperty('level');
-    expect(config.logging).toHaveProperty('format');
-    expect(config.logging).toHaveProperty('destination');
-  });
-
-  test('should have valid network', () => {
-    const config = getDefaultConfig();
-    expect(config.network).toBeDefined();
-    expect(config.network).toHaveProperty('timeoutMs');
-    expect(config.network).toHaveProperty('keepAlive');
-    expect(config.network).toHaveProperty('maxSockets');
-  });
-
-  test('should have valid yahooFinance', () => {
-    const config = getDefaultConfig();
-    expect(config.yahooFinance).toBeDefined();
-    expect(config.yahooFinance).toHaveProperty('baseUrl');
-    expect(config.yahooFinance).toHaveProperty('timeoutMs');
-    expect(config.yahooFinance).toHaveProperty('userAgent');
-  });
-
-  test('should have valid capabilities', () => {
-    const config = getDefaultConfig();
-    expect(config.capabilities).toBeDefined();
-    expect(Array.isArray(config.capabilities)).toBe(true);
+  test('serverInfo and capabilities are objects, not arrays', () => {
+    expect(Array.isArray(defaultConfig.capabilities)).toBe(false);
+    expect(Array.isArray(defaultConfig.serverInfo)).toBe(false);
+    expect(typeof defaultConfig.serverInfo).toBe('object');
   });
 });
 
-describe('getServerInfoDefaults', () => {
-  test('should return server info defaults', () => {
-    const defaults = getServerInfoDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('name');
-    expect(defaults).toHaveProperty('version');
-    expect(defaults).toHaveProperty('protocolVersion');
+describe('defaultRateLimitConfig', () => {
+  test('carries the documented numeric defaults', () => {
+    expect(defaultRateLimitConfig.requestsPerMinute).toBe(60);
+    expect(defaultRateLimitConfig.requestsPerHour).toBe(1500);
+    expect(defaultRateLimitConfig.burstLimit).toBe(5);
+    expect(defaultRateLimitConfig.backoffMultiplier).toBe(2);
+    expect(defaultRateLimitConfig.maxBackoffSeconds).toBe(300);
+    expect(defaultRateLimitConfig.retryCount).toBe(3);
+    expect(defaultRateLimitConfig.circuitBreakerThreshold).toBe(5);
+    expect(defaultRateLimitConfig.circuitBreakerResetMs).toBe(60000);
   });
 
-  test('should have valid name', () => {
-    const defaults = getServerInfoDefaults();
-    expect(typeof defaults.name).toBe('string');
-    expect(defaults.name.length).toBeGreaterThan(0);
-  });
-
-  test('should have valid version', () => {
-    const defaults = getServerInfoDefaults();
-    expect(typeof defaults.version).toBe('string');
-    expect(defaults.version).toMatch(/^\d+\.\d+\.\d+$/);
-  });
-
-  test('should have valid protocolVersion', () => {
-    const defaults = getServerInfoDefaults();
-    expect(typeof defaults.protocolVersion).toBe('string');
-    expect(defaults.protocolVersion).toMatch(/^\d+\.\d+$/);
+  test('has no strategy/windowMs/maxRequests fields (imagined API)', () => {
+    expect(defaultRateLimitConfig).not.toHaveProperty('strategy');
+    expect(defaultRateLimitConfig).not.toHaveProperty('maxRequests');
+    expect(defaultRateLimitConfig).not.toHaveProperty('windowMs');
   });
 });
 
-describe('getCapabilitiesDefaults', () => {
-  test('should return capabilities defaults', () => {
-    const defaults = getCapabilitiesDefaults();
-    expect(defaults).toBeDefined();
-    expect(Array.isArray(defaults)).toBe(true);
+describe('defaultCacheConfig', () => {
+  test('carries per-domain TTLs in milliseconds plus size and strategy', () => {
+    expect(defaultCacheConfig.ttlQuotes).toBe(60000);
+    expect(defaultCacheConfig.ttlHistorical).toBe(3600000);
+    expect(defaultCacheConfig.ttlFinancials).toBe(86400000);
+    expect(defaultCacheConfig.ttlNews).toBe(300000);
+    expect(defaultCacheConfig.ttlAnalysis).toBe(3600000);
+    expect(defaultCacheConfig.maxCacheSize).toBe(1000);
+    expect(defaultCacheConfig.cacheStrategy).toBe('lru');
   });
 
-  test('should return empty array by default', () => {
-    const defaults = getCapabilitiesDefaults();
-    expect(defaults.length).toBe(0);
-  });
-});
-
-describe('getTransportDefaults', () => {
-  test('should return transport defaults', () => {
-    const defaults = getTransportDefaults();
-    expect(defaults).toBeDefined();
+  test('cacheStrategy is one of lru/lfu/fifo', () => {
+    expect(['lru', 'lfu', 'fifo']).toContain(defaultCacheConfig.cacheStrategy);
   });
 
-  test('should return stdio as default', () => {
-    const defaults = getTransportDefaults();
-    expect(defaults).toBe('stdio');
+  test('has no enabled/store/ttl/maxEntries fields (imagined API)', () => {
+    expect(defaultCacheConfig).not.toHaveProperty('enabled');
+    expect(defaultCacheConfig).not.toHaveProperty('store');
+    expect(defaultCacheConfig).not.toHaveProperty('ttl');
+    expect(defaultCacheConfig).not.toHaveProperty('maxEntries');
   });
 });
 
-describe('getRateLimitDefaults', () => {
-  test('should return rate limit defaults', () => {
-    const defaults = getRateLimitDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('strategy');
-    expect(defaults).toHaveProperty('maxRequests');
-    expect(defaults).toHaveProperty('windowMs');
-    expect(defaults).toHaveProperty('tokenRefillRate');
+describe('defaultRetryConfig', () => {
+  test('carries the documented retry defaults', () => {
+    expect(defaultRetryConfig.maxRetries).toBe(3);
+    expect(defaultRetryConfig.baseDelay).toBe(1000);
+    expect(defaultRetryConfig.maxDelay).toBe(30000);
+    expect(defaultRetryConfig.jitter).toBe(true);
+    expect(defaultRetryConfig.jitterFactor).toBe(0.1);
   });
 
-  test('should have valid strategy', () => {
-    const defaults = getRateLimitDefaults();
-    expect(['token-bucket', 'fixed-window', 'sliding-window']).toContain(defaults.strategy);
+  test('retryableStatusCodes and retryableErrors are the real arrays', () => {
+    expect(defaultRetryConfig.retryableStatusCodes).toEqual([429, 500, 502, 503, 504]);
+    expect(defaultRetryConfig.retryableErrors).toEqual(['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND']);
   });
 
-  test('should have positive maxRequests', () => {
-    const defaults = getRateLimitDefaults();
-    expect(defaults.maxRequests).toBeGreaterThan(0);
+  test('maxDelay is at least baseDelay', () => {
+    expect(defaultRetryConfig.maxDelay).toBeGreaterThanOrEqual(defaultRetryConfig.baseDelay);
   });
 
-  test('should have positive windowMs', () => {
-    const defaults = getRateLimitDefaults();
-    expect(defaults.windowMs).toBeGreaterThan(0);
+  test('jitterFactor sits within the schema 0..1 bounds', () => {
+    expect(defaultRetryConfig.jitterFactor).toBeGreaterThanOrEqual(0);
+    expect(defaultRetryConfig.jitterFactor).toBeLessThanOrEqual(1);
   });
 
-  test('should have positive tokenRefillRate', () => {
-    const defaults = getRateLimitDefaults();
-    expect(defaults.tokenRefillRate).toBeGreaterThan(0);
-  });
-});
-
-describe('getCacheDefaults', () => {
-  test('should return cache defaults', () => {
-    const defaults = getCacheDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('enabled');
-    expect(defaults).toHaveProperty('store');
-    expect(defaults).toHaveProperty('ttl');
-    expect(defaults).toHaveProperty('maxEntries');
-  });
-
-  test('should have valid store', () => {
-    const defaults = getCacheDefaults();
-    expect(['memory', 'redis']).toContain(defaults.store);
-  });
-
-  test('should have positive ttl', () => {
-    const defaults = getCacheDefaults();
-    expect(defaults.ttl).toBeGreaterThan(0);
-  });
-
-  test('should have positive maxEntries', () => {
-    const defaults = getCacheDefaults();
-    expect(defaults.maxEntries).toBeGreaterThan(0);
-  });
-
-  test('should be enabled by default', () => {
-    const defaults = getCacheDefaults();
-    expect(defaults.enabled).toBe(true);
+  test('has no enabled/strategy/initialDelayMs fields (imagined API)', () => {
+    expect(defaultRetryConfig).not.toHaveProperty('enabled');
+    expect(defaultRetryConfig).not.toHaveProperty('strategy');
+    expect(defaultRetryConfig).not.toHaveProperty('initialDelayMs');
   });
 });
 
-describe('getRetryDefaults', () => {
-  test('should return retry defaults', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('enabled');
-    expect(defaults).toHaveProperty('maxRetries');
-    expect(defaults).toHaveProperty('initialDelayMs');
-    expect(defaults).toHaveProperty('maxDelayMs');
-    expect(defaults).toHaveProperty('strategy');
-    expect(defaults).toHaveProperty('backoffMultiplier');
-    expect(defaults).toHaveProperty('jitter');
+describe('defaultCircuitBreakerConfig', () => {
+  test('carries the real four-field shape', () => {
+    expect(defaultCircuitBreakerConfig.failureThreshold).toBe(5);
+    expect(defaultCircuitBreakerConfig.successThreshold).toBe(2);
+    expect(defaultCircuitBreakerConfig.timeout).toBe(60000);
+    expect(defaultCircuitBreakerConfig.monitoringWindow).toBe(60000);
   });
 
-  test('should have valid strategy', () => {
-    const defaults = getRetryDefaults();
-    expect(['exponential', 'linear', 'fixed']).toContain(defaults.strategy);
-  });
-
-  test('should have positive maxRetries', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults.maxRetries).toBeGreaterThanOrEqual(0);
-  });
-
-  test('should have positive initialDelayMs', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults.initialDelayMs).toBeGreaterThan(0);
-  });
-
-  test('should have maxDelayMs >= initialDelayMs', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults.maxDelayMs).toBeGreaterThanOrEqual(defaults.initialDelayMs);
-  });
-
-  test('should have positive backoffMultiplier', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults.backoffMultiplier).toBeGreaterThan(0);
-  });
-
-  test('should have jitter boolean', () => {
-    const defaults = getRetryDefaults();
-    expect(typeof defaults.jitter).toBe('boolean');
-  });
-
-  test('should be enabled by default', () => {
-    const defaults = getRetryDefaults();
-    expect(defaults.enabled).toBe(true);
+  test('has no errorThresholdPercentage/resetTimeoutMs/volumeThreshold fields (imagined API)', () => {
+    expect(defaultCircuitBreakerConfig).not.toHaveProperty('errorThresholdPercentage');
+    expect(defaultCircuitBreakerConfig).not.toHaveProperty('resetTimeoutMs');
+    expect(defaultCircuitBreakerConfig).not.toHaveProperty('volumeThreshold');
+    expect(defaultCircuitBreakerConfig).not.toHaveProperty('halfOpenMaxAttempts');
+    expect(defaultCircuitBreakerConfig).not.toHaveProperty('enabled');
   });
 });
 
-describe('getCircuitBreakerDefaults', () => {
-  test('should return circuit breaker defaults', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('enabled');
-    expect(defaults).toHaveProperty('timeoutMs');
-    expect(defaults).toHaveProperty('errorThresholdPercentage');
-    expect(defaults).toHaveProperty('resetTimeoutMs');
-    expect(defaults).toHaveProperty('rollingCountBuckets');
-    expect(defaults).toHaveProperty('rollingCountTimeoutMs');
-    expect(defaults).toHaveProperty('volumeThreshold');
-    expect(defaults).toHaveProperty('halfOpenMaxAttempts');
+describe('defaultQueueConfig', () => {
+  test('carries the real queue defaults', () => {
+    expect(defaultQueueConfig.maxConcurrent).toBe(5);
+    expect(defaultQueueConfig.maxQueueSize).toBe(100);
+    expect(defaultQueueConfig.priorityLevels).toBe(3);
+    expect(defaultQueueConfig.queueTimeout).toBe(30000);
+    expect(defaultQueueConfig.batchWindow).toBe(100);
   });
 
-  test('should have positive timeoutMs', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.timeoutMs).toBeGreaterThan(0);
-  });
-
-  test('should have valid errorThresholdPercentage', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.errorThresholdPercentage).toBeGreaterThanOrEqual(0);
-    expect(defaults.errorThresholdPercentage).toBeLessThanOrEqual(100);
-  });
-
-  test('should have positive resetTimeoutMs', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.resetTimeoutMs).toBeGreaterThan(0);
-  });
-
-  test('should have positive rollingCountBuckets', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.rollingCountBuckets).toBeGreaterThan(0);
-  });
-
-  test('should have positive rollingCountTimeoutMs', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.rollingCountTimeoutMs).toBeGreaterThan(0);
-  });
-
-  test('should have positive volumeThreshold', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.volumeThreshold).toBeGreaterThanOrEqual(0);
-  });
-
-  test('should have positive halfOpenMaxAttempts', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.halfOpenMaxAttempts).toBeGreaterThan(0);
-  });
-
-  test('should be enabled by default', () => {
-    const defaults = getCircuitBreakerDefaults();
-    expect(defaults.enabled).toBe(true);
+  test('has no enabled/strategy/concurrency/timeoutMs fields (imagined API)', () => {
+    expect(defaultQueueConfig).not.toHaveProperty('enabled');
+    expect(defaultQueueConfig).not.toHaveProperty('strategy');
+    expect(defaultQueueConfig).not.toHaveProperty('concurrency');
+    expect(defaultQueueConfig).not.toHaveProperty('maxSize');
   });
 });
 
-describe('getQueueDefaults', () => {
-  test('should return queue defaults', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('enabled');
-    expect(defaults).toHaveProperty('maxSize');
-    expect(defaults).toHaveProperty('strategy');
-    expect(defaults).toHaveProperty('concurrency');
-    expect(defaults).toHaveProperty('timeoutMs');
-    expect(defaults).toHaveProperty('processingTimeoutMs');
+describe('defaultDataCompletionConfig', () => {
+  test('carries the real data-completion defaults', () => {
+    expect(defaultDataCompletionConfig.enableFallback).toBe(true);
+    expect(defaultDataCompletionConfig.fallbackPriority).toEqual(['cache', 'alternative']);
+    expect(defaultDataCompletionConfig.fillMissingFields).toBe(true);
+    expect(defaultDataCompletionConfig.validateCompleteness).toBe(true);
   });
 
-  test('should have valid strategy', () => {
-    const defaults = getQueueDefaults();
-    expect(['fifo', 'lifo', 'priority']).toContain(defaults.strategy);
-  });
-
-  test('should have positive maxSize', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults.maxSize).toBeGreaterThan(0);
-  });
-
-  test('should have positive concurrency', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults.concurrency).toBeGreaterThan(0);
-  });
-
-  test('should have positive timeoutMs', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults.timeoutMs).toBeGreaterThan(0);
-  });
-
-  test('should have positive processingTimeoutMs', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults.processingTimeoutMs).toBeGreaterThan(0);
-  });
-
-  test('should be enabled by default', () => {
-    const defaults = getQueueDefaults();
-    expect(defaults.enabled).toBe(true);
+  test('has no enabled/level/allowPartial/fallbackToCache fields (imagined API)', () => {
+    expect(defaultDataCompletionConfig).not.toHaveProperty('enabled');
+    expect(defaultDataCompletionConfig).not.toHaveProperty('level');
+    expect(defaultDataCompletionConfig).not.toHaveProperty('allowPartial');
+    expect(defaultDataCompletionConfig).not.toHaveProperty('requiredFields');
   });
 });
 
-describe('getDataCompletionDefaults', () => {
-  test('should return data completion defaults', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('enabled');
-    expect(defaults).toHaveProperty('level');
-    expect(defaults).toHaveProperty('requiredFields');
-    expect(defaults).toHaveProperty('preferredFields');
-    expect(defaults).toHaveProperty('allowPartial');
-    expect(defaults).toHaveProperty('fallbackToCache');
+describe('defaultLoggingConfig', () => {
+  test('carries the minimal logging defaults', () => {
+    expect(defaultLoggingConfig.level).toBe('info');
+    expect(defaultLoggingConfig.format).toBe('json');
+    expect(defaultLoggingConfig.destination).toBe('console');
   });
 
-  test('should have valid level', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(['none', 'minimal', 'moderate', 'complete']).toContain(defaults.level);
-  });
-
-  test('should have arrays for fields', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(Array.isArray(defaults.requiredFields)).toBe(true);
-    expect(Array.isArray(defaults.preferredFields)).toBe(true);
-  });
-
-  test('should have allowPartial boolean', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(typeof defaults.allowPartial).toBe('boolean');
-  });
-
-  test('should have fallbackToCache boolean', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(typeof defaults.fallbackToCache).toBe('boolean');
-  });
-
-  test('should be enabled by default', () => {
-    const defaults = getDataCompletionDefaults();
-    expect(defaults.enabled).toBe(true);
+  test('level/format/destination are within their schema enums', () => {
+    expect(['debug', 'info', 'warn', 'error']).toContain(defaultLoggingConfig.level);
+    expect(['json', 'text']).toContain(defaultLoggingConfig.format);
+    expect(['console', 'file', 'both']).toContain(defaultLoggingConfig.destination);
   });
 });
 
-describe('getLoggingDefaults', () => {
-  test('should return logging defaults', () => {
-    const defaults = getLoggingDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('level');
-    expect(defaults).toHaveProperty('format');
-    expect(defaults).toHaveProperty('destination');
+describe('defaultNetworkConfig', () => {
+  test('carries the real network defaults', () => {
+    expect(defaultNetworkConfig.timeoutMs).toBe(30000);
+    expect(defaultNetworkConfig.keepAlive).toBe(true);
+    expect(defaultNetworkConfig.keepAliveMsecs).toBe(1000);
+    expect(defaultNetworkConfig.maxSockets).toBe(50);
+    expect(defaultNetworkConfig.maxFreeSockets).toBe(10);
+    expect(defaultNetworkConfig.scheduling).toBe('fifo');
+    expect(defaultNetworkConfig.maxRedirects).toBe(5);
+    expect(defaultNetworkConfig.followRedirects).toBe(true);
   });
 
-  test('should have valid level', () => {
-    const defaults = getLoggingDefaults();
-    expect(['debug', 'info', 'warn', 'error']).toContain(defaults.level);
+  test('scheduling is fifo/lifo', () => {
+    expect(['fifo', 'lifo']).toContain(defaultNetworkConfig.scheduling);
   });
 
-  test('should have valid format', () => {
-    const defaults = getLoggingDefaults();
-    expect(['text', 'json']).toContain(defaults.format);
-  });
-
-  test('should have valid destination', () => {
-    const defaults = getLoggingDefaults();
-    expect(['console', 'file']).toContain(defaults.destination);
+  test('has no proxy/httpAgent/httpsAgent by default (optional)', () => {
+    expect(defaultNetworkConfig).not.toHaveProperty('proxy');
+    expect(defaultNetworkConfig).not.toHaveProperty('httpAgent');
+    expect(defaultNetworkConfig).not.toHaveProperty('httpsAgent');
   });
 });
 
-describe('getNetworkDefaults', () => {
-  test('should return network defaults', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('timeoutMs');
-    expect(defaults).toHaveProperty('keepAlive');
-    expect(defaults).toHaveProperty('keepAliveMsecs');
-    expect(defaults).toHaveProperty('maxSockets');
-    expect(defaults).toHaveProperty('maxFreeSockets');
-    expect(defaults).toHaveProperty('scheduling');
-    expect(defaults).toHaveProperty('maxRedirects');
-    expect(defaults).toHaveProperty('followRedirects');
+describe('defaultYahooFinanceConfig', () => {
+  test('carries the real Yahoo Finance defaults', () => {
+    expect(defaultYahooFinanceConfig.baseUrl).toBe('https://query1.finance.yahoo.com');
+    expect(defaultYahooFinanceConfig.timeoutMs).toBe(10000);
+    expect(defaultYahooFinanceConfig.maxConcurrentRequests).toBe(5);
+    expect(defaultYahooFinanceConfig.requestQueueSize).toBe(100);
+    expect(defaultYahooFinanceConfig.validateResponses).toBe(true);
+    expect(defaultYahooFinanceConfig.strictMode).toBe(false);
   });
 
-  test('should have positive timeoutMs', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults.timeoutMs).toBeGreaterThan(0);
+  test('baseUrl is a real https URL string', () => {
+    expect(defaultYahooFinanceConfig.baseUrl).toMatch(/^https:\/\//);
   });
 
-  test('should have keepAlive boolean', () => {
-    const defaults = getNetworkDefaults();
-    expect(typeof defaults.keepAlive).toBe('boolean');
-  });
-
-  test('should have positive keepAliveMsecs', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults.keepAliveMsecs).toBeGreaterThan(0);
-  });
-
-  test('should have positive maxSockets', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults.maxSockets).toBeGreaterThan(0);
-  });
-
-  test('should have positive maxFreeSockets', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults.maxFreeSockets).toBeGreaterThanOrEqual(0);
-  });
-
-  test('should have valid scheduling', () => {
-    const defaults = getNetworkDefaults();
-    expect(['fifo', 'lifo']).toContain(defaults.scheduling);
-  });
-
-  test('should have positive maxRedirects', () => {
-    const defaults = getNetworkDefaults();
-    expect(defaults.maxRedirects).toBeGreaterThanOrEqual(0);
-  });
-
-  test('should have followRedirects boolean', () => {
-    const defaults = getNetworkDefaults();
-    expect(typeof defaults.followRedirects).toBe('boolean');
+  test('userAgent/apiKey/apiSecret are absent from the default (only an unused alt endpoint reads userAgent)', () => {
+    expect(defaultYahooFinanceConfig).not.toHaveProperty('userAgent');
+    expect(defaultYahooFinanceConfig).not.toHaveProperty('apiKey');
+    expect(defaultYahooFinanceConfig).not.toHaveProperty('apiSecret');
   });
 });
 
-describe('getYahooFinanceDefaults', () => {
-  test('should return Yahoo Finance defaults', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(defaults).toBeDefined();
-    expect(defaults).toHaveProperty('baseUrl');
-    expect(defaults).toHaveProperty('timeoutMs');
-    expect(defaults).toHaveProperty('userAgent');
-    expect(defaults).toHaveProperty('maxConcurrentRequests');
-    expect(defaults).toHaveProperty('requestQueueSize');
-    expect(defaults).toHaveProperty('validateResponses');
-    expect(defaults).toHaveProperty('strictMode');
+describe('defaultServerInfoConfig', () => {
+  test('name is the server identity', () => {
+    expect(defaultServerInfoConfig.name).toBe('y-finance-mcp-server');
   });
 
-  test('should have valid baseUrl', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(typeof defaults.baseUrl).toBe('string');
-    expect(defaults.baseUrl).toMatch(/^https?:\/\//);
+  test('version is the empty string by design (the entrypoint injects the real package version)', () => {
+    expect(defaultServerInfoConfig.version).toBe('');
   });
 
-  test('should have positive timeoutMs', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(defaults.timeoutMs).toBeGreaterThan(0);
+  test('raw default version carries no semver', () => {
+    expect(defaultServerInfoConfig.version).not.toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test('should have valid userAgent', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(typeof defaults.userAgent).toBe('string');
-    expect(defaults.userAgent.length).toBeGreaterThan(0);
+  test('protocolVersion is a dotted string', () => {
+    expect(defaultServerInfoConfig.protocolVersion).toBe('1.0');
+  });
+});
+
+describe('defaultCapabilitiesConfig', () => {
+  test('is an object with tools/resources/prompts (not an array)', () => {
+    expect(Array.isArray(defaultCapabilitiesConfig)).toBe(false);
+    expect(defaultCapabilitiesConfig).toHaveProperty('tools');
+    expect(defaultCapabilitiesConfig).toHaveProperty('resources');
+    expect(defaultCapabilitiesConfig).toHaveProperty('prompts');
   });
 
-  test('should have positive maxConcurrentRequests', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(defaults.maxConcurrentRequests).toBeGreaterThan(0);
+  test('sub-capabilities default to empty objects', () => {
+    expect(defaultCapabilitiesConfig.tools).toEqual({});
+    expect(defaultCapabilitiesConfig.resources).toEqual({});
+    expect(defaultCapabilitiesConfig.prompts).toEqual({});
+  });
+});
+
+describe('defaultSecurityConfig', () => {
+  test('enables the security surface and matches the schema limits', () => {
+    expect(defaultSecurityConfig.enabled).toBe(true);
+    expect(defaultSecurityConfig.enableInputValidation).toBe(true);
+    expect(defaultSecurityConfig.maxSymbolsPerRequest).toBe(50);
+    expect(defaultSecurityConfig.maxStringLength).toBe(1000);
+    expect(defaultSecurityConfig.allowedOrigins).toEqual([]);
   });
 
-  test('should have positive requestQueueSize', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(defaults.requestQueueSize).toBeGreaterThan(0);
-  });
-
-  test('should have validateResponses boolean', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(typeof defaults.validateResponses).toBe('boolean');
-  });
-
-  test('should have strictMode boolean', () => {
-    const defaults = getYahooFinanceDefaults();
-    expect(typeof defaults.strictMode).toBe('boolean');
+  test('allowedOrigins defaults to an empty array', () => {
+    expect(Array.isArray(defaultSecurityConfig.allowedOrigins)).toBe(true);
+    expect(defaultSecurityConfig.allowedOrigins.length).toBe(0);
   });
 });

@@ -1,896 +1,349 @@
-import { validateConfig, validateYahooFinanceConfig, validateRateLimitConfig, validateCacheConfig, validateRetryConfig, validateCircuitBreakerConfig, validateQueueConfig, validateDataCompletionConfig, validateLoggingConfig, validateNetworkConfig } from '../../../src/config/validation';
+import {
+  AppConfigSchema,
+  RateLimitConfigSchema,
+  CacheConfigSchema,
+  RetryConfigSchema,
+  CircuitBreakerConfigSchema,
+  QueueConfigSchema,
+  DataCompletionConfigSchema,
+  LoggingConfigSchema,
+  NetworkConfigSchema,
+  YahooFinanceConfigSchema,
+  SecurityConfigSchema,
+  ServerInfoConfigSchema,
+  CapabilitiesConfigSchema
+} from '../../../src/config/validation';
+import {
+  defaultConfig,
+  defaultRateLimitConfig,
+  defaultCacheConfig,
+  defaultRetryConfig,
+  defaultCircuitBreakerConfig,
+  defaultQueueConfig,
+  defaultDataCompletionConfig,
+  defaultLoggingConfig,
+  defaultNetworkConfig,
+  defaultYahooFinanceConfig,
+  defaultSecurityConfig,
+  defaultServerInfoConfig,
+  defaultCapabilitiesConfig
+} from '../../../src/config/defaults';
+import { loadConfig } from '../../../src/config/index';
+import * as fs from 'fs';
 
-describe('validateConfig', () => {
-  test('should validate valid config', () => {
-    const config = {
-      serverInfo: {
-        name: 'Test Server',
-        version: '1.0.0',
-        protocolVersion: '1.0'
-      },
-      capabilities: {},
-      transport: 'stdio',
-      rateLimit: {
-        strategy: 'token-bucket',
-        maxRequests: 10,
-        windowMs: 60000,
-        tokenRefillRate: 1
-      },
-      cache: {
-        enabled: true,
-        store: 'memory',
-        ttl: 60000,
-        maxEntries: 100
-      }
-    };
+jest.mock('fs', () => ({
+  existsSync: jest.fn(),
+  readFileSync: jest.fn()
+}));
 
-    const result = validateConfig(config);
-    expect(result.success).toBe(true);
+// `src/config/validation.ts` exports zod schemas, not `validate*` functions.
+// A schema is fatal on bad input: `.parse` throws, `.safeParse` returns
+// `{ success: false, error }`. There is no `{ success, errors }` shape.
+// Every schema requires its full section and uses no `.strict()`, so unknown
+// keys are stripped rather than rejected.
+
+describe('AppConfigSchema (aggregate)', () => {
+  test('accepts the real defaultConfig end to end', () => {
+    expect(AppConfigSchema.safeParse(defaultConfig).success).toBe(true);
   });
 
-  test('should reject invalid config', () => {
-    const config = {
-      serverInfo: null,
-      transport: 'invalid'
-    };
-
-    const result = validateConfig(config);
+  test('reports issues on the failure branch, not a { success, errors } shape', () => {
+    const { security: _omitted, ...rest } = defaultConfig;
+    const result = AppConfigSchema.safeParse(rest);
     expect(result.success).toBe(false);
-    expect(result.errors).toBeDefined();
+    if (!result.success) {
+      expect(result.error.issues.length).toBeGreaterThan(0);
+    }
   });
 
-  test('should require serverInfo', () => {
-    const config = {
-      transport: 'stdio'
-    };
-
-    const result = validateConfig(config);
-    expect(result.success).toBe(false);
+  test('strips unknown top-level keys rather than rejecting them', () => {
+    const input = { ...defaultConfig, transport: 'stdio', bogus: 123 };
+    const result = AppConfigSchema.parse(input);
+    expect(result).not.toHaveProperty('transport');
+    expect(result).not.toHaveProperty('bogus');
+    expect(result.rateLimit.requestsPerMinute).toBe(60);
   });
 
-  test('should require transport', () => {
-    const config = {
-      serverInfo: { name: 'Test', version: '1.0.0' }
-    };
-
-    const result = validateConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept valid transport types', () => {
-    const transports = ['stdio', 'sse', 'http'];
-    transports.forEach(transport => {
-      const config = {
-        serverInfo: { name: 'Test', version: '1.0.0', protocolVersion: '1.0' },
-        capabilities: {},
-        transport
-      };
-      const result = validateConfig(config);
-      expect(result.success).toBe(true);
-    });
-  });
-
-  test('should reject invalid transport type', () => {
-    const config = {
-      serverInfo: { name: 'Test', version: '1.0.0', protocolVersion: '1.0' },
-      capabilities: {},
-      transport: 'invalid'
-    };
-
-    const result = validateConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should validate optional config sections', () => {
-    const config = {
-      serverInfo: { name: 'Test', version: '1.0.0', protocolVersion: '1.0' },
-      capabilities: {},
-      transport: 'stdio'
-    };
-
-    const result = validateConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should return validation errors', () => {
-    const config = {
-      serverInfo: null,
-      transport: 'invalid',
-      rateLimit: null
-    };
-
-    const result = validateConfig(config);
-    expect(result.success).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
+  test('rejects a missing section', () => {
+    expect(() => AppConfigSchema.parse({ ...defaultConfig, security: undefined })).toThrow();
   });
 });
 
-describe('validateYahooFinanceConfig', () => {
-  test('should validate valid Yahoo Finance config', () => {
-    const config = {
-      baseUrl: 'https://query1.finance.yahoo.com',
-      timeoutMs: 30000,
-      userAgent: 'Mozilla/5.0',
-      maxConcurrentRequests: 5,
-      requestQueueSize: 100,
-      validateResponses: true,
-      strictMode: false
-    };
-
-    const result = validateYahooFinanceConfig(config);
-    expect(result.success).toBe(true);
+describe('RateLimitConfigSchema', () => {
+  test('accepts the default rate-limit section', () => {
+    expect(RateLimitConfigSchema.safeParse(defaultRateLimitConfig).success).toBe(true);
   });
 
-  test('should reject invalid baseUrl', () => {
-    const config = {
-      baseUrl: 'not-a-url'
-    };
-
-    const result = validateYahooFinanceConfig(config);
-    expect(result.success).toBe(false);
+  test('rejects a non-positive requestsPerMinute', () => {
+    expect(() => RateLimitConfigSchema.parse({ ...defaultRateLimitConfig, requestsPerMinute: 0 })).toThrow();
+    expect(() => RateLimitConfigSchema.parse({ ...defaultRateLimitConfig, requestsPerMinute: -10 })).toThrow();
   });
 
-  test('should reject negative timeout', () => {
-    const config = {
-      timeoutMs: -1000
-    };
-
-    const result = validateYahooFinanceConfig(config);
-    expect(result.success).toBe(false);
+  test('allows retryCount to be zero but not negative', () => {
+    expect(RateLimitConfigSchema.safeParse({ ...defaultRateLimitConfig, retryCount: 0 }).success).toBe(true);
+    expect(() => RateLimitConfigSchema.parse({ ...defaultRateLimitConfig, retryCount: -1 })).toThrow();
   });
 
-  test('should reject zero maxConcurrentRequests', () => {
-    const config = {
-      maxConcurrentRequests: 0
-    };
-
-    const result = validateYahooFinanceConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative requestQueueSize', () => {
-    const config = {
-      requestQueueSize: -10
-    };
-
-    const result = validateYahooFinanceConfig(config);
-    expect(result.success).toBe(false);
+  test('backoffMultiplier is a positive number (may be fractional) but zero fails', () => {
+    expect(RateLimitConfigSchema.safeParse({ ...defaultRateLimitConfig, backoffMultiplier: 1.5 }).success).toBe(true);
+    expect(() => RateLimitConfigSchema.parse({ ...defaultRateLimitConfig, backoffMultiplier: 0 })).toThrow();
   });
 });
 
-describe('validateRateLimitConfig', () => {
-  test('should validate valid rate limit config', () => {
-    const config = {
-      strategy: 'token-bucket',
-      maxRequests: 10,
-      windowMs: 60000,
-      tokenRefillRate: 1
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(true);
+describe('CacheConfigSchema', () => {
+  test('accepts the default cache section', () => {
+    expect(CacheConfigSchema.safeParse(defaultCacheConfig).success).toBe(true);
   });
 
-  test('should reject invalid strategy', () => {
-    const config = {
-      strategy: 'invalid'
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(false);
+  test('cacheStrategy enum accepts lru/lfu/fifo and rejects others', () => {
+    expect(CacheConfigSchema.safeParse({ ...defaultCacheConfig, cacheStrategy: 'lfu' }).success).toBe(true);
+    expect(CacheConfigSchema.safeParse({ ...defaultCacheConfig, cacheStrategy: 'fifo' }).success).toBe(true);
+    expect(() => CacheConfigSchema.parse({ ...defaultCacheConfig, cacheStrategy: 'priority' })).toThrow();
+    expect(() => CacheConfigSchema.parse({ ...defaultCacheConfig, cacheStrategy: 'invalid' })).toThrow();
   });
 
-  test('should reject negative maxRequests', () => {
-    const config = {
-      maxRequests: -10
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero maxRequests', () => {
-    const config = {
-      maxRequests: 0
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative windowMs', () => {
-    const config = {
-      windowMs: -1000
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative tokenRefillRate', () => {
-    const config = {
-      tokenRefillRate: -1
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept token-bucket strategy', () => {
-    const config = {
-      strategy: 'token-bucket',
-      maxRequests: 10,
-      windowMs: 60000,
-      tokenRefillRate: 1
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept fixed-window strategy', () => {
-    const config = {
-      strategy: 'fixed-window',
-      maxRequests: 10,
-      windowMs: 60000
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept sliding-window strategy', () => {
-    const config = {
-      strategy: 'sliding-window',
-      maxRequests: 10,
-      windowMs: 60000
-    };
-
-    const result = validateRateLimitConfig(config);
-    expect(result.success).toBe(true);
+  test('ttl fields are non-negative integers (zero allowed) but maxCacheSize is positive', () => {
+    expect(CacheConfigSchema.safeParse({ ...defaultCacheConfig, ttlQuotes: 0 }).success).toBe(true);
+    expect(() => CacheConfigSchema.parse({ ...defaultCacheConfig, ttlQuotes: -1000 })).toThrow();
+    expect(() => CacheConfigSchema.parse({ ...defaultCacheConfig, maxCacheSize: 0 })).toThrow();
   });
 });
 
-describe('validateCacheConfig', () => {
-  test('should validate valid cache config', () => {
-    const config = {
-      enabled: true,
-      store: 'memory',
-      ttl: 60000,
-      maxEntries: 100
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(true);
+describe('RetryConfigSchema', () => {
+  test('accepts the default retry section', () => {
+    expect(RetryConfigSchema.safeParse(defaultRetryConfig).success).toBe(true);
   });
 
-  test('should reject invalid store type', () => {
-    const config = {
-      store: 'invalid'
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(false);
+  test('jitterFactor is bounded to 0..1', () => {
+    expect(RetryConfigSchema.safeParse({ ...defaultRetryConfig, jitterFactor: 1 }).success).toBe(true);
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, jitterFactor: 2 })).toThrow();
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, jitterFactor: -0.1 })).toThrow();
   });
 
-  test('should reject negative ttl', () => {
-    const config = {
-      ttl: -1000
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(false);
+  test('retryableStatusCodes requires numbers: a comma-split env string array fails', () => {
+    // Documents `YF_MCP_RETRY_STATUS_CODES=429,500`, which parseEnvVar turns into
+    // ['429','500']; z.array(z.number()) rejects it.
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, retryableStatusCodes: ['429', '500'] })).toThrow();
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, retryableStatusCodes: [0] })).toThrow();
+    expect(RetryConfigSchema.safeParse({ ...defaultRetryConfig, retryableStatusCodes: [429, 500] }).success).toBe(true);
   });
 
-  test('should reject negative maxEntries', () => {
-    const config = {
-      maxEntries: -10
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero maxEntries', () => {
-    const config = {
-      maxEntries: 0
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept memory store', () => {
-    const config = {
-      store: 'memory'
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept redis store', () => {
-    const config = {
-      store: 'redis',
-      host: 'localhost',
-      port: 6379
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should reject redis without host', () => {
-    const config = {
-      store: 'redis',
-      port: 6379
-    };
-
-    const result = validateCacheConfig(config);
-    expect(result.success).toBe(false);
+  test('maxRetries and baseDelay are non-negative, maxDelay is positive', () => {
+    expect(RetryConfigSchema.safeParse({ ...defaultRetryConfig, maxRetries: 0 }).success).toBe(true);
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, maxRetries: -1 })).toThrow();
+    expect(() => RetryConfigSchema.parse({ ...defaultRetryConfig, maxDelay: 0 })).toThrow();
   });
 });
 
-describe('validateRetryConfig', () => {
-  test('should validate valid retry config', () => {
-    const config = {
-      enabled: true,
-      maxRetries: 3,
-      initialDelayMs: 1000,
-      maxDelayMs: 10000,
-      strategy: 'exponential',
-      backoffMultiplier: 2,
-      jitter: false,
-      retryableStatusCodes: [429, 500],
-      retryableErrorCodes: ['ECONNRESET']
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(true);
+describe('CircuitBreakerConfigSchema', () => {
+  test('accepts the default circuit-breaker section', () => {
+    expect(CircuitBreakerConfigSchema.safeParse(defaultCircuitBreakerConfig).success).toBe(true);
   });
 
-  test('should reject negative maxRetries', () => {
-    const config = {
-      maxRetries: -1
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative initialDelayMs', () => {
-    const config = {
-      initialDelayMs: -1000
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject maxDelayMs less than initialDelayMs', () => {
-    const config = {
-      initialDelayMs: 10000,
-      maxDelayMs: 5000
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject invalid strategy', () => {
-    const config = {
-      strategy: 'invalid'
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative backoffMultiplier', () => {
-    const config = {
-      backoffMultiplier: -1
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept exponential strategy', () => {
-    const config = {
-      strategy: 'exponential',
-      maxRetries: 3,
-      initialDelayMs: 1000
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept linear strategy', () => {
-    const config = {
-      strategy: 'linear',
-      maxRetries: 3,
-      initialDelayMs: 1000
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept fixed strategy', () => {
-    const config = {
-      strategy: 'fixed',
-      maxRetries: 3,
-      retryDelayMs: 2000
-    };
-
-    const result = validateRetryConfig(config);
-    expect(result.success).toBe(true);
+  test('failure/success thresholds and timeouts must be positive integers', () => {
+    expect(() => CircuitBreakerConfigSchema.parse({ ...defaultCircuitBreakerConfig, failureThreshold: 0 })).toThrow();
+    expect(() => CircuitBreakerConfigSchema.parse({ ...defaultCircuitBreakerConfig, successThreshold: 0 })).toThrow();
+    expect(() => CircuitBreakerConfigSchema.parse({ ...defaultCircuitBreakerConfig, timeout: -1000 })).toThrow();
   });
 });
 
-describe('validateCircuitBreakerConfig', () => {
-  test('should validate valid circuit breaker config', () => {
-    const config = {
-      enabled: true,
-      timeoutMs: 60000,
-      errorThresholdPercentage: 5,
-      resetTimeoutMs: 60000,
-      rollingCountBuckets: 60,
-      rollingCountTimeoutMs: 60000,
-      volumeThreshold: 5,
-      halfOpenMaxAttempts: 3
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(true);
+describe('QueueConfigSchema', () => {
+  test('accepts the default queue section', () => {
+    expect(QueueConfigSchema.safeParse(defaultQueueConfig).success).toBe(true);
   });
 
-  test('should reject negative timeoutMs', () => {
-    const config = {
-      timeoutMs: -1000
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
+  test('maxConcurrent, maxQueueSize and priorityLevels must be positive', () => {
+    expect(() => QueueConfigSchema.parse({ ...defaultQueueConfig, maxConcurrent: 0 })).toThrow();
+    expect(() => QueueConfigSchema.parse({ ...defaultQueueConfig, maxQueueSize: -10 })).toThrow();
+    expect(() => QueueConfigSchema.parse({ ...defaultQueueConfig, priorityLevels: 0 })).toThrow();
   });
 
-  test('should reject errorThresholdPercentage out of range', () => {
-    const config = {
-      errorThresholdPercentage: 150
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative errorThresholdPercentage', () => {
-    const config = {
-      errorThresholdPercentage: -10
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative resetTimeoutMs', () => {
-    const config = {
-      resetTimeoutMs: -1000
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero rollingCountBuckets', () => {
-    const config = {
-      rollingCountBuckets: 0
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative volumeThreshold', () => {
-    const config = {
-      volumeThreshold: -5
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero halfOpenMaxAttempts', () => {
-    const config = {
-      halfOpenMaxAttempts: 0
-    };
-
-    const result = validateCircuitBreakerConfig(config);
-    expect(result.success).toBe(false);
+  test('queueTimeout is non-negative (zero allowed)', () => {
+    expect(QueueConfigSchema.safeParse({ ...defaultQueueConfig, queueTimeout: 0 }).success).toBe(true);
+    expect(() => QueueConfigSchema.parse({ ...defaultQueueConfig, queueTimeout: -1 })).toThrow();
   });
 });
 
-describe('validateQueueConfig', () => {
-  test('should validate valid queue config', () => {
-    const config = {
-      enabled: true,
-      maxSize: 100,
-      strategy: 'fifo',
-      concurrency: 5,
-      timeoutMs: 30000,
-      processingTimeoutMs: 60000
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(true);
+describe('DataCompletionConfigSchema', () => {
+  test('accepts the default data-completion section', () => {
+    expect(DataCompletionConfigSchema.safeParse(defaultDataCompletionConfig).success).toBe(true);
   });
 
-  test('should reject invalid strategy', () => {
-    const config = {
-      strategy: 'invalid'
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative maxSize', () => {
-    const config = {
-      maxSize: -10
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero maxSize', () => {
-    const config = {
-      maxSize: 0
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative concurrency', () => {
-    const config = {
-      concurrency: -5
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject zero concurrency', () => {
-    const config = {
-      concurrency: 0
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative timeoutMs', () => {
-    const config = {
-      timeoutMs: -1000
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject negative processingTimeoutMs', () => {
-    const config = {
-      processingTimeoutMs: -1000
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept fifo strategy', () => {
-    const config = {
-      strategy: 'fifo',
-      maxSize: 100,
-      concurrency: 5
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept lifo strategy', () => {
-    const config = {
-      strategy: 'lifo',
-      maxSize: 100,
-      concurrency: 5
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept priority strategy', () => {
-    const config = {
-      strategy: 'priority',
-      maxSize: 100,
-      concurrency: 5
-    };
-
-    const result = validateQueueConfig(config);
-    expect(result.success).toBe(true);
+  test('flags are booleans and fallbackPriority is an array of strings', () => {
+    expect(() => DataCompletionConfigSchema.parse({ ...defaultDataCompletionConfig, enableFallback: 'yes' })).toThrow();
+    expect(() => DataCompletionConfigSchema.parse({ ...defaultDataCompletionConfig, fallbackPriority: ['cache', 123] })).toThrow();
+    expect(DataCompletionConfigSchema.safeParse({ ...defaultDataCompletionConfig, fallbackPriority: ['cache', 'alternative'] }).success).toBe(true);
   });
 });
 
-describe('validateDataCompletionConfig', () => {
-  test('should validate valid data completion config', () => {
-    const config = {
-      enabled: true,
-      level: 'moderate',
-      requiredFields: ['price', 'volume'],
-      preferredFields: ['marketCap', 'pe'],
-      allowPartial: true,
-      fallbackToCache: true
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(true);
+describe('LoggingConfigSchema', () => {
+  test('accepts the default logging section', () => {
+    expect(LoggingConfigSchema.safeParse(defaultLoggingConfig).success).toBe(true);
   });
 
-  test('should reject invalid level', () => {
-    const config = {
-      level: 'invalid'
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(false);
+  test('level/format/destination enums reject unknown values', () => {
+    expect(() => LoggingConfigSchema.parse({ ...defaultLoggingConfig, level: 'silent' })).toThrow();
+    expect(() => LoggingConfigSchema.parse({ ...defaultLoggingConfig, format: 'yaml' })).toThrow();
+    expect(() => LoggingConfigSchema.parse({ ...defaultLoggingConfig, destination: 'invalid' })).toThrow();
   });
 
-  test('should accept none level', () => {
-    const config = {
-      level: 'none'
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept minimal level', () => {
-    const config = {
-      level: 'minimal'
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept moderate level', () => {
-    const config = {
-      level: 'moderate'
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept complete level', () => {
-    const config = {
-      level: 'complete'
-    };
-
-    const result = validateDataCompletionConfig(config);
-    expect(result.success).toBe(true);
+  test('destination "both" is accepted and extra logging fields are optional', () => {
+    expect(LoggingConfigSchema.safeParse({ ...defaultLoggingConfig, destination: 'both' }).success).toBe(true);
+    expect(LoggingConfigSchema.safeParse({ ...defaultLoggingConfig, destination: 'file', filePath: 'app.log', maxSize: 0 }).success).toBe(false);
   });
 });
 
-describe('validateLoggingConfig', () => {
-  test('should validate valid logging config', () => {
-    const config = {
-      level: 'info',
-      format: 'text',
-      destination: 'console'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
+describe('NetworkConfigSchema', () => {
+  test('accepts the default network section', () => {
+    expect(NetworkConfigSchema.safeParse(defaultNetworkConfig).success).toBe(true);
   });
 
-  test('should reject invalid level', () => {
-    const config = {
-      level: 'invalid'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(false);
+  test('socket and timeout fields require positive integers', () => {
+    expect(() => NetworkConfigSchema.parse({ ...defaultNetworkConfig, timeoutMs: -1000 })).toThrow();
+    expect(() => NetworkConfigSchema.parse({ ...defaultNetworkConfig, maxSockets: 0 })).toThrow();
+    // Documents the real constraint: maxFreeSockets is positive, so 0 is rejected.
+    expect(() => NetworkConfigSchema.parse({ ...defaultNetworkConfig, maxFreeSockets: 0 })).toThrow();
   });
 
-  test('should reject invalid format', () => {
-    const config = {
-      format: 'invalid'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should reject invalid destination', () => {
-    const config = {
-      destination: 'invalid'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(false);
-  });
-
-  test('should accept debug level', () => {
-    const config = {
-      level: 'debug'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept info level', () => {
-    const config = {
-      level: 'info'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept warn level', () => {
-    const config = {
-      level: 'warn'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept error level', () => {
-    const config = {
-      level: 'error'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept text format', () => {
-    const config = {
-      format: 'text'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept json format', () => {
-    const config = {
-      format: 'json'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept console destination', () => {
-    const config = {
-      destination: 'console'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
-  });
-
-  test('should accept file destination', () => {
-    const config = {
-      destination: 'file',
-      filePath: 'app.log'
-    };
-
-    const result = validateLoggingConfig(config);
-    expect(result.success).toBe(true);
+  test('scheduling enum and proxy nesting are validated', () => {
+    expect(() => NetworkConfigSchema.parse({ ...defaultNetworkConfig, scheduling: 'invalid' })).toThrow();
+    expect(NetworkConfigSchema.safeParse({ ...defaultNetworkConfig, proxy: { host: 'h', port: 8080 } }).success).toBe(true);
+    expect(NetworkConfigSchema.safeParse({ ...defaultNetworkConfig, proxy: { host: 'h', port: 0 } }).success).toBe(false);
   });
 });
 
-describe('validateNetworkConfig', () => {
-  test('should validate valid network config', () => {
-    const config = {
-      timeoutMs: 30000,
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 10,
-      maxFreeSockets: 5,
-      scheduling: 'fifo',
-      maxRedirects: 5,
-      followRedirects: true
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(true);
+describe('YahooFinanceConfigSchema', () => {
+  test('accepts the default Yahoo Finance section', () => {
+    expect(YahooFinanceConfigSchema.safeParse(defaultYahooFinanceConfig).success).toBe(true);
   });
 
-  test('should reject negative timeoutMs', () => {
-    const config = {
-      timeoutMs: -1000
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+  test('baseUrl is NOT validated as a URL (plain z.string), so an arbitrary string passes', () => {
+    expect(YahooFinanceConfigSchema.safeParse({ ...defaultYahooFinanceConfig, baseUrl: 'not-a-url' }).success).toBe(true);
   });
 
-  test('should reject negative keepAliveMsecs', () => {
-    const config = {
-      keepAliveMsecs: -1000
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+  test('timeout/queue fields require positive integers', () => {
+    expect(() => YahooFinanceConfigSchema.parse({ ...defaultYahooFinanceConfig, timeoutMs: 0 })).toThrow();
+    expect(() => YahooFinanceConfigSchema.parse({ ...defaultYahooFinanceConfig, maxConcurrentRequests: 0 })).toThrow();
+    expect(() => YahooFinanceConfigSchema.parse({ ...defaultYahooFinanceConfig, requestQueueSize: -10 })).toThrow();
   });
 
-  test('should reject zero maxSockets', () => {
-    const config = {
-      maxSockets: 0
-    };
+  test('apiKey/apiSecret/userAgent are optional (default omits them)', () => {
+    expect(YahooFinanceConfigSchema.safeParse({ ...defaultYahooFinanceConfig, userAgent: 'Mozilla/5.0' }).success).toBe(true);
+  });
+});
 
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+describe('SecurityConfigSchema', () => {
+  test('accepts the default security section', () => {
+    expect(SecurityConfigSchema.safeParse(defaultSecurityConfig).success).toBe(true);
   });
 
-  test('should reject negative maxSockets', () => {
-    const config = {
-      maxSockets: -10
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+  test('allowedOrigins requires URL strings (empty array is valid)', () => {
+    expect(SecurityConfigSchema.safeParse({ ...defaultSecurityConfig, allowedOrigins: [] }).success).toBe(true);
+    expect(SecurityConfigSchema.safeParse({ ...defaultSecurityConfig, allowedOrigins: ['http://localhost:3000'] }).success).toBe(true);
+    expect(() => SecurityConfigSchema.parse({ ...defaultSecurityConfig, allowedOrigins: ['not-a-url'] })).toThrow();
   });
 
-  test('should reject negative maxFreeSockets', () => {
-    const config = {
-      maxFreeSockets: -5
-    };
+  test('maxSymbolsPerRequest is a positive integer', () => {
+    expect(() => SecurityConfigSchema.parse({ ...defaultSecurityConfig, maxSymbolsPerRequest: 0 })).toThrow();
+  });
+});
 
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+describe('ServerInfoConfigSchema', () => {
+  test('accepts the default server-info section including the empty version', () => {
+    expect(ServerInfoConfigSchema.safeParse(defaultServerInfoConfig).success).toBe(true);
   });
 
-  test('should reject invalid scheduling', () => {
-    const config = {
-      scheduling: 'invalid'
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+  test('version is a plain string, so the empty default passes (entrypoint injects the real one)', () => {
+    expect(ServerInfoConfigSchema.safeParse({ ...defaultServerInfoConfig, version: '' }).success).toBe(true);
   });
 
-  test('should reject negative maxRedirects', () => {
-    const config = {
-      maxRedirects: -1
-    };
+  test('name and version are required strings', () => {
+    const { name: _omitted, ...rest } = defaultServerInfoConfig;
+    expect(ServerInfoConfigSchema.safeParse(rest).success).toBe(false);
+    expect(() => ServerInfoConfigSchema.parse({ ...defaultServerInfoConfig, version: 2 as unknown as string })).toThrow();
+  });
+});
 
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(false);
+describe('CapabilitiesConfigSchema', () => {
+  test('accepts the default capabilities section', () => {
+    expect(CapabilitiesConfigSchema.safeParse(defaultCapabilitiesConfig).success).toBe(true);
   });
 
-  test('should accept fifo scheduling', () => {
-    const config = {
-      scheduling: 'fifo'
-    };
-
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(true);
+  test('requires the tools key', () => {
+    expect(CapabilitiesConfigSchema.safeParse({}).success).toBe(false);
+    expect(CapabilitiesConfigSchema.safeParse({ tools: {} }).success).toBe(true);
   });
 
-  test('should accept lifo scheduling', () => {
-    const config = {
-      scheduling: 'lifo'
-    };
+  test('tools.listChanged must be a boolean when present', () => {
+    expect(CapabilitiesConfigSchema.safeParse({ tools: { listChanged: 'yes' } }).success).toBe(false);
+    expect(CapabilitiesConfigSchema.safeParse({ tools: { listChanged: true } }).success).toBe(true);
+  });
+});
 
-    const result = validateNetworkConfig(config);
-    expect(result.success).toBe(true);
+describe('loadConfig (env wins over file, validation is fatal)', () => {
+  const existsSyncMock = fs.existsSync as unknown as jest.Mock;
+  const readFileSyncMock = fs.readFileSync as unknown as jest.Mock;
+
+  beforeEach(() => {
+    delete process.env.YF_MCP_RETRY_STATUS_CODES;
+    delete process.env.YF_MCP_CONFIG_PATH;
+    existsSyncMock.mockReset().mockReturnValue(false);
+    readFileSyncMock.mockReset();
+  });
+
+  afterEach(() => {
+    delete process.env.YF_MCP_RETRY_STATUS_CODES;
+    delete process.env.YF_MCP_CONFIG_PATH;
+  });
+
+  test('with no env overrides it returns the defaults, version still empty', () => {
+    const result = loadConfig({ sources: ['env'] });
+    expect(result.rateLimit.requestsPerMinute).toBe(60);
+    expect(result.cache.maxCacheSize).toBe(1000);
+    expect(result.serverInfo.version).toBe('');
+  });
+
+  test('validation is fatal when an env var yields a string array', () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.YF_MCP_RETRY_STATUS_CODES = '429,500';
+    expect(() => loadConfig({ sources: ['env'] })).toThrow();
+    expect(errorSpy).toHaveBeenCalledWith('Configuration validation failed:', expect.anything());
+    errorSpy.mockRestore();
+  });
+
+  test('the config file is inert: a JSON file value is overwritten by the env/default pass', () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(
+      JSON.stringify({ rateLimit: { requestsPerMinute: 999 }, serverInfo: { name: 'FROM-FILE' } })
+    );
+    const result = loadConfig();
+    expect(result.rateLimit.requestsPerMinute).toBe(60);
+    expect(result.serverInfo.name).toBe('y-finance-mcp-server');
+  });
+
+  test('a file value only takes effect when env is excluded from sources', () => {
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue(JSON.stringify({ rateLimit: { requestsPerMinute: 999 } }));
+    const result = loadConfig({ sources: ['file'] });
+    expect(result.rateLimit.requestsPerMinute).toBe(999);
+  });
+
+  test('a missing config file is not an error', () => {
+    existsSyncMock.mockReturnValue(false);
+    expect(() => loadConfig({ sources: ['file'] })).not.toThrow();
+    expect(loadConfig({ sources: ['file'] }).cache.maxCacheSize).toBe(1000);
+  });
+
+  test('a YAML file never reaches the effective config under default precedence', () => {
+    // Deterministic across module systems: whether js-yaml parses the file (the
+    // CommonJS Jest harness, where `require('js-yaml')` resolves) or the require
+    // throws and loadFromFile warns + returns null (production ESM, where `require`
+    // is undefined), the env pass overwrites every file value. So requestsPerMinute
+    // stays at the default 60 either way. The documented "console.warn + null"
+    // degrade branch itself is unreachable under ts-jest's CommonJS transpile.
+    existsSyncMock.mockReturnValue(true);
+    readFileSyncMock.mockReturnValue('rateLimit:\n  requestsPerMinute: 777\n');
+    const result = loadConfig({ configPath: 'test-config.yaml' });
+    expect(result.rateLimit.requestsPerMinute).toBe(60);
   });
 });

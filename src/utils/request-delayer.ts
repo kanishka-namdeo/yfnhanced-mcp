@@ -65,7 +65,7 @@ export class RequestDelayer {
       
       let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
       
-      const cleanup = () => {
+      const cleanup = (): void => {
         if (timeoutId !== null) {
           globalThis.clearTimeout(timeoutId);
           timeoutId = null;
@@ -90,7 +90,7 @@ export class RequestDelayer {
           setTimeout(() => {
             try {
               reject(new Error('Delay cancelled'));
-            } catch (error) {
+            } catch (_error) {
             }
           }, 0);
         }
@@ -152,7 +152,7 @@ export class RequestDelayer {
     if (cancelFn) {
       try {
         cancelFn();
-      } catch (error) {
+      } catch (_error) {
       }
     }
   }
@@ -232,10 +232,12 @@ export class DelayStrategy {
           delay = this.config.baseDelay;
         } else {
           const successRate = this.getSuccessRate();
+          // minDelay/maxDelay are normalized to 100/30000 by the constructor, so the
+          // fallbacks here mirror that and can never be observed.
           if (successRate > 0.9) {
-            delay = Math.max(this.config.minDelay!, this.config.baseDelay * 0.8);
+            delay = Math.max(this.config.minDelay ?? 100, this.config.baseDelay * 0.8);
           } else if (successRate < 0.5) {
-            delay = Math.min(this.config.maxDelay!, this.config.baseDelay * 1.5);
+            delay = Math.min(this.config.maxDelay ?? 30000, this.config.baseDelay * 1.5);
           } else {
             delay = this.config.baseDelay;
           }
@@ -248,7 +250,7 @@ export class DelayStrategy {
 
     delay = Math.max(this.config.minDelay ?? 0, Math.min(delay, this.config.maxDelay ?? Infinity));
 
-    if (this.config.jitter) {
+    if (this.config.jitter === true) {
       delay = this.addJitter(delay);
     }
 

@@ -10,7 +10,7 @@ Nothing in here is consumed by the runtime. `src/` never imports from `assets/`,
 
 - `assets/AGENTS.md` (this file) owns the visual identity system: palette, type, geometry, naming, and the theme strategy. Any new asset must derive from it rather than invent its own colors or fonts.
 - `assets/logo.svg`, `assets/logo-192.png` and `assets/banner.svg` own brand identity. They carry the mark, the wordmark, and the tagline, and are the only assets allowed to state a tool count or version.
-- `assets/diagrams/` owns the technical showcase artwork embedded in `README.github.md`. These are hand-authored, deliberately composed pieces meant to be looked at.
+- `assets/diagrams/` owns the technical showcase artwork embedded in `GITHUB-README.md`. These are hand-authored, deliberately composed pieces meant to be looked at.
 - `assets/terminal/` owns the rendered capture of a real server session.
 - `assets/social-preview.png` owns the GitHub Open Graph card. It is not referenced from any markdown; it is uploaded to repo Settings → General → Social preview.
 - `scripts/` owns the generators that reproduce the raster artifacts and the terminal capture.

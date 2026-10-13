@@ -1,4 +1,6 @@
 import { RetryPolicy, MaxRetriesExceededError, createRetryPolicy, retry } from '../../../src/middleware/retry';
+import { CircuitBreakerOpenError } from '../../../src/middleware/circuit-breaker';
+import { YahooFinanceError } from '../../../src/types/errors';
 
 describe('RetryPolicy', () => {
   let retryPolicy: RetryPolicy;
@@ -57,12 +59,81 @@ describe('RetryPolicy', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  test('should throw MaxRetriesExceededError after max retries', async () => {
+  // src/middleware/AGENTS.md: CircuitBreakerOpenError carries isRetryable = false
+  // (circuit-breaker.ts:16), classifyError passes any YahooFinanceError through untouched
+  // (error-classifier.ts:30-31), and shouldRetry bails on !isRetryable (retry.ts:129). So an
+  // open breaker short-circuits retry entirely: one attempt, no backoff scheduled, original
+  // error identity preserved for the service layer.
+  test('an open circuit breaker short-circuits retry with zero backoff scheduled', async () => {
+    const delayFn = jest.fn().mockResolvedValue(undefined);
+    const policy = new RetryPolicy({
+      enabled: true,
+      maxRetries: 3,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      strategy: 'exponential',
+      backoffMultiplier: 2,
+      jitter: false,
+      retryableStatusCodes: [429, 500],
+      retryableErrorCodes: ['ECONNRESET']
+    }, delayFn);
+    const onRetry = jest.fn();
+    policy.updateConfig({ onRetry });
+
+    const breakerError = new CircuitBreakerOpenError();
+    expect(breakerError).toBeInstanceOf(YahooFinanceError);
+    expect(breakerError.isRetryable).toBe(false);
+    expect(breakerError.code).toBe('YF_ERR_CIRCUIT_OPEN');
+    expect(policy.shouldRetry(breakerError, 1)).toBe(false);
+
+    const fn = jest.fn().mockRejectedValue(breakerError);
+    await expect(policy.execute(fn)).rejects.toBe(breakerError);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(delayFn).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  // DEFECT (src/middleware/retry.ts:50-58, :75-81): the MaxRetriesExceededError paths are
+  // unreachable for maxRetries >= 0. shouldRetry() returns false as soon as attempt + 1 >
+  // maxRetries (retry.ts:119), so executeWithRetry throws the *classified* error at
+  // attempt === maxRetries; the wrapper at :50 then sees attempt (=== maxRetries) as NOT
+  // > maxRetries and rethrows it. Exhaustion therefore surfaces as the classified
+  // YahooFinanceError after maxRetries + 1 calls, never as MaxRetriesExceededError.
+  test('retry exhaustion throws the classified error, not MaxRetriesExceededError', async () => {
     const fn = jest.fn().mockRejectedValue(new Error('ECONNRESET'));
     const promise = retryPolicy.execute(fn);
     jest.runAllTimers();
-    await expect(promise).rejects.toThrow(MaxRetriesExceededError);
-    expect(fn).toHaveBeenCalledTimes(4);
+    // 'ECONNRESET' matches no classifier keyword, so classifyError returns YF_ERR_UNKNOWN.
+    await expect(promise).rejects.toMatchObject({ code: 'YF_ERR_UNKNOWN' });
+    await promise.catch((error: unknown) => {
+      expect(error).not.toBeInstanceOf(MaxRetriesExceededError);
+    });
+    expect(fn).toHaveBeenCalledTimes(4); // maxRetries + 1 attempts, not the + 2 the loop bound suggests
+  });
+
+  // The only reachable construction of MaxRetriesExceededError from execute():
+  // maxRetries < 0 makes `attempt > maxRetries` true on the very first failure (retry.ts:75).
+  test('MaxRetriesExceededError is thrown only when maxRetries < 0', async () => {
+    const negativePolicy = new RetryPolicy({
+      enabled: true,
+      maxRetries: -1,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      strategy: 'exponential',
+      backoffMultiplier: 2,
+      jitter: false,
+      retryableStatusCodes: [429, 500],
+      retryableErrorCodes: ['ECONNRESET']
+    }, (ms) => {
+      jest.advanceTimersByTime(ms);
+      return Promise.resolve();
+    });
+
+    const fn = jest.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const promise = negativePolicy.execute(fn);
+    jest.runAllTimers();
+    await expect(promise).rejects.toBeInstanceOf(MaxRetriesExceededError);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   test('should use exponential backoff strategy', () => {
@@ -105,12 +176,34 @@ describe('RetryPolicy', () => {
     expect(delay).toBeLessThanOrEqual(3000);
   });
 
+  // Real jitter is +/-25% with a 100 ms floor (retry.ts:189-196), so the assertion window
+  // must match the implementation, and Math.random must be pinned to be deterministic.
   test('should add jitter when enabled', () => {
     retryPolicy.updateConfig({ jitter: true });
-    const baseDelay = 1000;
-    const delay = retryPolicy.calculateDelay(1);
-    expect(delay).toBeGreaterThanOrEqual(baseDelay * 0.9);
-    expect(delay).toBeLessThanOrEqual(baseDelay * 1.1);
+    const randomSpy = jest.spyOn(Math, 'random');
+
+    try {
+      randomSpy.mockReturnValue(0.5); // zero-offset point of (rand * 2 - 1)
+      expect(retryPolicy.calculateDelay(1)).toBe(1000);
+
+      randomSpy.mockReturnValue(1); // +25%
+      expect(retryPolicy.calculateDelay(1)).toBe(1250);
+
+      randomSpy.mockReturnValue(0); // -25%
+      expect(retryPolicy.calculateDelay(1)).toBe(750);
+    } finally {
+      randomSpy.mockRestore();
+    }
+  });
+
+  test('jitter never drops the delay below the 100 ms floor', () => {
+    retryPolicy.updateConfig({ jitter: true, initialDelayMs: 100, strategy: 'fixed', retryDelayMs: 100 });
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0); // -25% would be 75
+    try {
+      expect(retryPolicy.calculateDelay(1)).toBe(100);
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   test('should not add jitter when disabled', () => {
@@ -289,10 +382,17 @@ describe('retry', () => {
     expect(result).toBe('success');
   });
 
-  test('should retry on failure', async () => {
+  test('should retry on failure, paced through the injected delay function', async () => {
     const fn = jest.fn()
       .mockRejectedValueOnce(new Error('ECONNRESET'))
       .mockResolvedValue('success');
+
+    // RetryPolicy honours a caller-supplied delayFn (retry.ts:243-245), so the backoff is
+    // observed as an argument and applied to the fake clock instead of slept on.
+    const delayFn = jest.fn().mockImplementation((ms: number) => {
+      jest.advanceTimersByTime(ms);
+      return Promise.resolve();
+    });
 
     const config = {
       enabled: true,
@@ -306,21 +406,37 @@ describe('retry', () => {
       retryableErrorCodes: ['ECONNRESET']
     };
 
-    const promise = retry(fn, config, undefined, async (ms) => {
-      await new Promise((resolve) => {
-        setTimeout(() => {
-          jest.advanceTimersByTime(ms);
-          resolve();
-        }, 0);
-        jest.advanceTimersByTime(0);
-      });
-    });
-    
-    const result = await promise;
+    await expect(retry(fn, config, undefined, delayFn)).resolves.toBe('success');
 
-    expect(result).toBe('success');
     expect(fn).toHaveBeenCalledTimes(2);
-  }, 100000);
+    expect(delayFn).toHaveBeenCalledWith(1000); // initialDelayMs * 2^(1-1)
+  });
+
+  test('the module-level retry() helper also surfaces exhaustion as the classified error', async () => {
+    const fn = jest.fn().mockRejectedValue(new Error('timeout waiting for upstream'));
+    const delayFn = jest.fn().mockImplementation((ms: number) => {
+      jest.advanceTimersByTime(ms);
+      return Promise.resolve();
+    });
+
+    const config = {
+      enabled: true,
+      maxRetries: 2,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      strategy: 'exponential' as const,
+      backoffMultiplier: 2,
+      jitter: false,
+      retryableStatusCodes: [429, 500],
+      retryableErrorCodes: ['ECONNRESET']
+    };
+
+    await expect(retry(fn, config, undefined, delayFn)).rejects.toMatchObject({
+      code: 'YF_ERR_TIMEOUT'
+    });
+    expect(fn).toHaveBeenCalledTimes(3); // maxRetries + 1 attempts
+    expect(delayFn.mock.calls.map((call) => call[0])).toEqual([1000, 2000]);
+  });
 });
 
 describe('MaxRetriesExceededError', () => {
@@ -345,5 +461,150 @@ describe('MaxRetriesExceededError', () => {
   test('should be instance of Error', () => {
     const error = new MaxRetriesExceededError('Max retries exceeded', 5, []);
     expect(error).toBeInstanceOf(Error);
+  });
+});
+
+// Residual branches in src/middleware/retry.ts: the unreachable loop tail (:111-115), the
+// error-code leg of shouldRetry (:139), the switch default (:170), the `fixed` fallback leg
+// (:168), and every per-error multiplier arm of calculateDelayForError (:207, :216, :221).
+describe('RetryPolicy residual branches', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const base = {
+    enabled: true,
+    maxRetries: 3,
+    initialDelayMs: 1000,
+    maxDelayMs: 10000,
+    strategy: 'exponential' as const,
+    backoffMultiplier: 2,
+    jitter: false,
+    retryableStatusCodes: [429, 500, 502, 503, 504]
+  };
+
+  const yfError = (overrides: {
+    code?: string;
+    statusCode?: number | null;
+    isRetryable?: boolean;
+    isRateLimit?: boolean;
+    context?: Record<string, unknown>;
+  } = {}): YahooFinanceError =>
+    new YahooFinanceError(
+      'shaped failure',
+      (overrides.code ?? 'YF_ERR_SERVER') as never,
+      overrides.statusCode === undefined ? 500 : overrides.statusCode,
+      overrides.isRetryable ?? true,
+      overrides.isRateLimit ?? false,
+      overrides.context ?? {},
+      'inspect the upstream response'
+    );
+
+  test('DEFECT: a non-numeric maxRetries runs zero attempts and throws a bare Error, not a YahooFinanceError', async () => {
+    for (const maxRetries of [NaN, undefined] as never[]) {
+      const onGiveUp = jest.fn();
+      const policy = new RetryPolicy({ ...base, maxRetries, onGiveUp });
+      const fn = jest.fn().mockResolvedValue('never-called');
+
+      const error = await policy.execute(fn).catch((caught: unknown) => caught);
+
+      expect(fn).not.toHaveBeenCalled();
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Retry failed without error');
+      // execute()'s guard is `attempt > maxRetries`, which is false against NaN, so the typed
+      // MaxRetriesExceededError wrapper is skipped and no `code` reaches the caller.
+      expect(error).not.toBeInstanceOf(MaxRetriesExceededError);
+      expect(error).not.toBeInstanceOf(YahooFinanceError);
+      // :111 short-circuits on a null lastError, so onGiveUp never fires for this failure mode.
+      expect(onGiveUp).not.toHaveBeenCalled();
+    }
+  });
+
+  test('shouldRetry returns true on the raw error-code leg before touching the message', () => {
+    const policy = new RetryPolicy(base);
+    const reset = yfError({ code: 'ECONNRESET', statusCode: null });
+    expect(policy.shouldRetry(reset, 1)).toBe(true);
+    // A non-string code fails the typeof guard and falls through to the message/default legs.
+    expect(policy.shouldRetry(yfError({ code: 7 as never, statusCode: null }), 1)).toBe(true);
+    // And the leg itself is skipped when the error carries no `code` property at all.
+    expect(policy.shouldRetry(yfError({ statusCode: null }), 1)).toBe(true);
+  });
+
+  test('an unknown strategy reaches the switch default and returns initialDelayMs', () => {
+    const policy = new RetryPolicy({ ...base, strategy: 'sine' as never });
+    expect(policy.calculateDelay(1)).toBe(1000);
+    expect(policy.calculateDelay(9)).toBe(1000);
+  });
+
+  test('fixed strategy: an absent retryDelayMs falls back to initialDelayMs', () => {
+    const policy = new RetryPolicy({ ...base, strategy: 'fixed' as never });
+    expect(policy.calculateDelay(1)).toBe(1000);
+    expect(policy.calculateDelay(4)).toBe(1000);
+    expect(new RetryPolicy({ ...base, strategy: 'fixed' as never, retryDelayMs: 0 }).calculateDelay(2))
+      .toBe(1000);
+    expect(
+      new RetryPolicy({ ...base, strategy: 'fixed' as never, retryDelayMs: NaN }).calculateDelay(2)
+    ).toBe(1000);
+    expect(new RetryPolicy({ ...base, strategy: 'fixed' as never, retryDelayMs: 250 }).calculateDelay(2))
+      .toBe(250);
+  });
+
+  test('a rate-limit error with a numeric retryAfter wins over the exponential base', () => {
+    const policy = new RetryPolicy(base);
+    expect(policy.calculateDelayForError(yfError({ isRateLimit: true, statusCode: 429, context: { retryAfter: 5 } }), 1))
+      .toBe(5000);
+    // Base delay above retryAfter keeps the base.
+    expect(policy.calculateDelayForError(yfError({ isRateLimit: true, statusCode: 429, context: { retryAfter: 0.25 } }), 4))
+      .toBe(8000);
+  });
+
+  test('DEFECT: a string retryAfter is truthy but fails the typeof guard and silently drops the header', () => {
+    const policy = new RetryPolicy(base);
+    // retryAfter '5' (a header arrives as a string) is truthy, so the right operand is evaluated,
+    // fails the typeof check, and the caller gets the doubled backoff instead of 5 s.
+    expect(policy.calculateDelayForError(yfError({ isRateLimit: true, statusCode: 429, context: { retryAfter: '5' } }), 1))
+      .toBe(2000);
+    expect(policy.calculateDelayForError(yfError({ isRateLimit: true, statusCode: 429, context: {} }), 1))
+      .toBe(2000);
+  });
+
+  test('a cookie error halves the base delay', () => {
+    const policy = new RetryPolicy(base);
+    expect(policy.calculateDelayForError(yfError({ code: 'YF_ERR_COOKIE_ERROR', statusCode: 401 }), 1))
+      .toBe(500);
+    // The halving is capped by maxDelayMs like every other multiplier.
+    expect(
+      new RetryPolicy({ ...base, initialDelayMs: 9000 }).calculateDelayForError(
+        yfError({ code: 'YF_ERR_COOKIE_ERROR', statusCode: 401 }),
+        1
+      )
+    ).toBe(4500);
+  });
+
+  test('502/503/504 scale by 1.5 while any other status falls through to the base delay', () => {
+    const policy = new RetryPolicy(base);
+    for (const status of [502, 503, 504]) {
+      expect(policy.calculateDelayForError(yfError({ statusCode: status }), 1)).toBe(1500);
+    }
+    // 500 evaluates the includes() leg and returns the untouched base.
+    expect(policy.calculateDelayForError(yfError({ statusCode: 500 }), 1)).toBe(1000);
+    // A null status short-circuits on the left operand.
+    expect(policy.calculateDelayForError(yfError({ statusCode: null }), 1)).toBe(1000);
+  });
+
+  test('without a delayFn the policy waits on the module setTimeout', async () => {
+    const policy = new RetryPolicy(base);
+    const fn = jest.fn()
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValue('recovered');
+
+    const pending = policy.execute(fn);
+    await jest.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });

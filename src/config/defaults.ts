@@ -243,7 +243,7 @@ export const defaultSecurityConfig: SecurityConfig = {
 
 export const defaultServerInfoConfig: ServerInfoConfig = {
   name: 'y-finance-mcp-server',
-  version: '1.0.0',
+  version: '',
   protocolVersion: '1.0'
 };
 

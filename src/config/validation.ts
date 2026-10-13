@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { SecurityConfig } from '../types/config.js';
 
 export const RateLimitConfigSchema = z.object({
   requestsPerMinute: z.number().int().positive(),

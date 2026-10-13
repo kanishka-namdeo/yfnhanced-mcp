@@ -1,8 +1,8 @@
 import * as z from 'zod';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { YahooFinanceClient } from '../services/yahoo-finance.js';
-import { DataQualityReporter, type DataQualityReport } from '../utils/data-completion.js';
-import type { SummaryProfileResult, CryptoQuoteResult, ForexQuoteResult, TrendingResult, ScreenerResult } from '../types/yahoo-finance.js';
+import { DataQualityReporter } from '../utils/data-completion.js';
+import type { SummaryProfileResult, CryptoQuoteResult, ForexQuoteResult, TrendingResult, ScreenerResult, ScreenerMatch } from '../types/yahoo-finance.js';
 import type { MCPServerConfig } from '../types/config.js';
 import { InputValidator } from '../utils/security.js';
 
@@ -144,7 +144,7 @@ class SummaryTools {
 
     InputValidator.validateSymbols(symbols);
 
-    if (currency) {
+    if (currency !== undefined && currency !== '') {
       InputValidator.validateString(currency, 'currency');
     }
 
@@ -228,25 +228,27 @@ class SummaryTools {
     const parsed = TrendingInputSchema.parse(input);
     const { region, limit } = parsed;
 
-    if (region) {
+    if (region !== undefined && region !== '') {
       InputValidator.validateString(region, 'region');
     }
 
     const startTime = Date.now();
-    const cacheKey = `trending:${region || 'US'}`;
 
     try {
-      const result = await this.fetchTrending(region || 'US', limit);
+      const result = await this.fetchTrending(region !== undefined && region !== '' ? region : 'US', limit);
 
       const dataAge = Date.now() - startTime;
       const warnings: string[] = [];
 
-      if (!result.quotes || result.quotes.length === 0) {
+      // Declared required, but the wire can omit quotes on a degraded response.
+      const quotes: TrendingResult['quotes'] | null | undefined = result.quotes;
+
+      if (quotes === undefined || quotes === null || quotes.length === 0) {
         warnings.push('No trending symbols returned');
       }
 
-      const completenessScore = result.quotes && result.quotes.length > 0 ? 
-        Math.min(100, (result.quotes.length / (limit || 10)) * 100) : 0;
+      const completenessScore = quotes !== undefined && quotes !== null && quotes.length > 0 ? 
+        Math.min(100, (quotes.length / (limit ?? 10)) * 100) : 0;
 
       const meta: TrendingMeta = {
         fromCache: dataAge > 1000,
@@ -265,13 +267,11 @@ class SummaryTools {
     const parsed = ScreenerInputSchema.parse(input);
     const { filters, limit, validateFilters } = parsed;
 
-    if (filters) {
-      for (const key in filters) {
-        InputValidator.validateString(key, 'filter_key');
-        const value = filters[key];
-        if (typeof value === 'string') {
-          InputValidator.validateString(value, `filter_${key}`);
-        }
+    for (const key in filters) {
+      InputValidator.validateString(key, 'filter_key');
+      const value = filters[key];
+      if (typeof value === 'string') {
+        InputValidator.validateString(value, `filter_${key}`);
       }
     }
 
@@ -285,8 +285,6 @@ class SummaryTools {
       }
     }
 
-    const cacheKey = `screener:${JSON.stringify(filters)}:${limit || 25}`;
-
     try {
       const result = await this.fetchScreener(filters, limit);
 
@@ -296,9 +294,10 @@ class SummaryTools {
         warnings.push(`Screener error: ${result.finance.error.description}`);
       }
 
-      const quotes = result.finance.result?.[0]?.quotes || [];
-      const completenessScore = quotes.length > 0 ? 
-        this.calculateScreenerCompleteness(quotes) : 0;
+      // Declared required, but the wire can omit quotes when the screener returns no matches.
+      const matchedQuotes: ScreenerMatch[] | null | undefined = result.finance.result?.[0]?.quotes;
+      const completenessScore = matchedQuotes !== undefined && matchedQuotes !== null && matchedQuotes.length > 0 ? 
+        this.calculateScreenerCompleteness(matchedQuotes) : 0;
 
       const meta: ScreenerMeta = {
         fromCache: dataAge > 1000,
@@ -327,7 +326,7 @@ class SummaryTools {
   private async fetchTrending(region: string, limit?: number): Promise<TrendingResult> {
     const result = await this.client.getTrending({ region });
 
-    if (limit && result.quotes.length > limit) {
+    if (limit !== undefined && result.quotes.length > limit) {
       result.quotes = result.quotes.slice(0, limit);
     }
 
@@ -341,7 +340,7 @@ class SummaryTools {
       value: String(value)
     }));
 
-    const result = await this.client.screener(filterArray, { count: limit || 25, offset: 0 });
+    const result = await this.client.screener(filterArray, { count: limit ?? 25, offset: 0 });
     return result;
   }
 
@@ -449,7 +448,7 @@ class SummaryTools {
   }
 
   private calculateScreenerCompleteness(quotes: unknown[]): number {
-    if (!quotes || quotes.length === 0) {
+    if (quotes.length === 0) {
       return 0;
     }
 

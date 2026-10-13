@@ -28,13 +28,18 @@ them must pass:
 npm run lint          # eslint .
 npm run typecheck     # tsc --noEmit (src only)
 npm run build         # tsc emits dist/
-npm test              # full Jest suite
+npm test              # deterministic Jest suite (no market data needed)
 npm run test:coverage # Jest with the 85% coverage gate
 ```
 
-Ordering matters: the `tests/e2e/` and `tests/chaos/` suites spawn `dist/index.js`,
-so `npm run build` must run before `npm test` or those suites fail with
-"Server build not found".
+Ordering matters: the `tests/e2e/` suites and the protocol checks inside
+`tests/chaos/` spawn `dist/index.js`, so `npm run build` must run before
+`npm test` or those suites fail with "Server build not found".
+
+`npm run test:live` runs only the `*.live.test.ts` files, which call the real
+Yahoo Finance endpoint. They are excluded from `npm test` and from CI because an
+unauthenticated third-party API cannot be a reproducible gate; run them by hand
+when you change a data path.
 
 ## Coverage
 
@@ -44,13 +49,22 @@ New code needs tests to keep the gate green.
 
 ## Test layers
 
-There are four layers, all executed by a single `npm test` (there are no per-layer
-scripts; narrow a run with `npx jest <path>`):
+There are four layers. `npm test` runs every deterministic one; the live-network files
+are held back for `npm run test:live` (narrow any run with `npx jest <path>`):
 
-- **unit** (`tests/unit/`) — mock the `src` module under test, assert with inline literals.
-- **integration** (`tests/integration/`) — mock the service or `yahoo-finance2`; middleware integration uses the real classes.
-- **e2e** (`tests/e2e/`) — spawn the built server and speak JSON-RPC over stdio. Requires `npm run build`.
-- **chaos** (`tests/chaos/`) — failure injection against the built server. Requires `npm run build`.
+- **unit** (`tests/unit/`) — drive the real exported functions and classes with a fake
+  upstream at the seam the code actually calls. `jest.mock`-ing a namespace function
+  that `src/` never invokes is how this layer accumulated 44 red suites.
+- **integration** (`tests/integration/`) — mock the service or `yahoo-finance2`;
+  middleware integration uses the real classes.
+- **e2e** (`tests/e2e/`) — spawn the built server and speak JSON-RPC over stdio.
+  Protocol checks (handshake, `tools/list`, `prompts/list`, `resources/templates/list`,
+  error envelopes) need no market data; anything that reads live quotes lives in a
+  `*.live.test.ts` file. Requires `npm run build`.
+- **chaos** (`tests/chaos/`) — failure injection **in process** against the real
+  resilience stack. A stub in the Jest process cannot reach a spawned child, so faults
+  are injected through the fake `yahooFinanceInstance` seam, not `global.fetch`. Each
+  file keeps one spawned-server protocol block, which does require `npm run build`.
 
 **Resilience features need chaos tests.** If you touch or add cache, circuit
 breaker, rate limiter, retry, or security behavior, add or update a chaos test that
